@@ -2,39 +2,49 @@
 
 Local multi-agent switchboard for coding agents and CLIs.
 
-This bundle contains the shareable source for a Hermes-style delegation system:
+`ai-bridge` is an opinionated Hermes-style delegation system: one agent shells out to another agent CLI as a worker, stores the job as local JSON state, and feeds the result back into the next prompt cycle through hooks.
 
-- `codex` can orchestrate and review
-- Cursor Agent can handle harder implementation tasks
-- OpenCode can handle easier implementation tasks
-- Claude Code can be used as an explicit worker target
-- Goose is supported as an explicit worker target
-- Gemini CLI, Aider, Amp, Cline, Droid, and other tools are supported through an adapter registry
-- any supported target can be launched through the shared delegation command
+## Primary Agents
 
-Assumption: the target user already has the relevant CLIs installed and authenticated locally as needed.
+These four are the default product model:
 
-## Contents
+- `codex`
+- `claude`
+- `cursor`
+- `opencode`
 
-- `src/ai-peers/`
-  - local MCP peer bus
-  - SQLite-backed peer registry and message queue
-  - tests and pinned Python requirements
-- `hooks/`
-  - prompt/session context injection hooks
-- `bin/`
-  - shareable wrapper and dispatcher commands
-- `skills/agent-delegation/`
-  - shared skill that teaches any of the four tools how to delegate to the others
-- `examples/`
-  - setup notes and config snippets
+They are the only agents treated as first-class in:
+
+- default docs and examples
+- `--target auto` routing
+- scoring and route explanations
+- orchestration guidance
+- hook summaries
+
+## Additional Agents
+
+Additional agents are supported, but they are second-class by design.
+
+- Built-in explicit target:
+  - `goose`
+- Adapter-configured explicit targets:
+  - `gemini`
+  - `aider`
+  - `amp`
+  - `cline`
+  - `droid`
+  - other shell-callable tools
+
+Additional agents do not participate in `--target auto` unless they are explicitly allowlisted in `.ai-bridge/routing.json` or `~/.config/ai-bridge/routing.json` and given scores.
 
 ## Main Commands
 
 - `ai-delegate`
-  - explicit delegation to any supported target
+  - preferred user-facing command
 - `ai-dispatch`
-  - difficulty-based routing
+  - dispatcher engine and lifecycle commands
+- `ai-peers`
+  - local peer-bus CLI
 - `codex-orchestrator`
   - launch Codex as orchestrator/reviewer
 - `agent-hard`
@@ -43,44 +53,133 @@ Assumption: the target user already has the relevant CLIs installed and authenti
   - launch OpenCode as the easy-task worker
 - `claude-code-worker`
   - launch Claude Code as a worker
-- `ai-peers`
-  - shell helper for inspecting the peer bus
 
-## Example Usage
+## Core Workflows
+
+Explicit delegation:
 
 ```bash
 ai-delegate --target codex --cwd "$PWD" --from-agent cursor-agent -- "Fix the failing parser tests"
-ai-delegate --target cursor --cwd "$PWD" --from-agent opencode -- "Refactor the auth pipeline safely"
-ai-delegate --target opencode --cwd "$PWD" --from-agent codex -- "Add a simple settings toggle"
+ai-delegate --target cursor --cwd "$PWD" --from-agent codex -- "Debug the race condition in the sync engine"
+ai-delegate --target opencode --cwd "$PWD" --from-agent codex -- "Rename the settings toggle label"
 ai-delegate --target claude --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ai-delegate --target goose --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ai-delegate --target gemini --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
+```
+
+Auto-routing across the primary four only:
+
+```bash
 ai-delegate --target auto --difficulty hard --cwd "$PWD" --from-agent codex -- "Debug the race condition"
+```
+
+Background work with completion notification:
+
+```bash
 ai-delegate --target auto --difficulty hard --background --notify-on-complete --cwd "$PWD" --from-agent codex -- "Run the refactor and tell me when it's done"
 ```
 
-## Support Matrix
+Job lifecycle:
 
-- Native in this bundle:
-  - `codex`
-  - `cursor`
-  - `opencode`
-  - `claude`
-  - `goose`
-- Adapter-ready via `~/.config/ai-bridge/adapters.json`:
-  - `gemini`
-  - `aider`
-  - `amp`
-  - `cline`
-  - `droid`
-  - other shell-callable agents
+```bash
+ai-dispatch list
+ai-dispatch show <job_id>
+ai-dispatch retry <job_id> --feedback "Tighten the fix and keep the diff smaller"
+ai-dispatch watch <job_id>
+```
+
+Route inspection:
+
+```bash
+ai-dispatch classify "Debug the race condition in the sync engine" --json
+ai-dispatch route "Rename the settings toggle label" --json
+```
+
+Verification:
+
+```bash
+ai-delegate --target opencode --verify default --cwd "$PWD" --from-agent codex -- "Add a simple settings toggle"
+```
+
+Opt-in worktree isolation:
+
+```bash
+ai-delegate --target cursor --worktree auto --cwd "$PWD" --from-agent codex -- "Refactor the auth flow safely"
+```
+
+## Config Files
+
+Adapter registry:
+
+```text
+~/.config/ai-bridge/adapters.json
+```
+
+Routing config:
+
+```text
+.ai-bridge/routing.json
+~/.config/ai-bridge/routing.json
+```
+
+Verification config:
+
+```text
+.ai-bridge/verify.json
+~/.config/ai-bridge/verify.json
+```
+
+Routing config example:
+
+```json
+{
+  "auto_routing": {
+    "enabled_agents": ["codex", "claude", "cursor", "opencode"],
+    "optional_allowlist": ["goose"]
+  },
+  "agents": {
+    "goose": {
+      "scores": {
+        "simple_edit": 5,
+        "implementation": 6,
+        "debugging": 6,
+        "refactor": 5,
+        "research": 5,
+        "review": 4
+      }
+    }
+  }
+}
+```
+
+Verification config example:
+
+```json
+{
+  "profiles": {
+    "default": {
+      "command": ["python3", "-m", "unittest", "discover", "-s", "src/ai-peers/tests", "-p", "test_*.py"]
+    }
+  }
+}
+```
+
+## Portability
+
+Use these env vars to override repo-relative path resolution when needed:
+
+- `AI_BRIDGE_ROOT`
+- `AI_BRIDGE_DISPATCH_BIN`
+- `AI_BRIDGE_PEERS_PYTHON`
+- `AI_BRIDGE_PEERS_CLI`
+- `AI_BRIDGE_CONFIG_DIR`
+- `AI_DISPATCH_STATE_ROOT`
 
 ## Notes
 
-- This export intentionally does not include live config files with tokens or personal settings.
-- It includes the actual source code and wrappers, plus safe documentation for wiring it up.
-- Delegation is Hermes-style: one agent shells out to another agent CLI as a worker.
-- Background delegation supports Hermes-style completion tracking and next-turn notifications.
-- Non-native tools are supported through adapter commands rather than hardcoded assumptions about their CLI flags.
-- This is not native in-process model handoff and not true mid-turn push messaging.
-- Claude Code is included as an explicit worker target in the delegator.
+- Delegation is Hermes-style shell execution, not an in-process model handoff.
+- Job state is stored as JSON under `~/.local/state/ai-dispatch/` by default.
+- Background completion is next-turn only; there is no mid-turn push channel.
+- Worktrees are opt-in and retained by default.
+- Verification is opt-in and config-driven.
+- This project does not include a TUI, cost tracking, sandboxing, or auto-merge.

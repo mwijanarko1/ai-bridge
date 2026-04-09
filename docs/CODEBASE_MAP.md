@@ -6,86 +6,110 @@ last_mapped: 2026-04-09T00:00:00Z
 
 ## System Overview
 
-The Conductor is a local multi-agent switchboard that enables Codex, Cursor Agent, OpenCode, and Claude Code to coordinate work through a shared peer registry and message bus. Delegation is Hermes-style: one agent shells out to another agent CLI as a worker process.
-
-**Role split:**
+`ai-bridge` is a local multi-agent switchboard. The primary product model is a four-agent core:
 
 | Agent | Role |
 |---|---|
 | Codex | `orchestrator-reviewer` |
-| OpenCode | `easy-programmer` |
+| Claude Code | `worker` |
 | Cursor Agent | `hard-programmer` |
-| Claude Code | `hard-programmer` |
+| OpenCode | `easy-programmer` |
 
-**Auto-routing order:** easy → OpenCode then Cursor; hard → Cursor then OpenCode; review → Codex.
+Additional agents such as Goose or adapter-configured CLIs are supported explicitly, but they are not part of the default auto-routing pool.
+
+Delegation is Hermes-style: one agent shells out to another agent CLI as a worker process, writes a JSON job record, and exposes the result through CLI lifecycle commands plus next-turn hook summaries.
 
 ## Directory Guide
 
-```
+```text
 .
-├── bin/                          Executable wrappers (all on $PATH)
-│   ├── ai-dispatch               Main dispatcher script (Python); difficulty-based routing, background job registry, and worker execution
-│   ├── ai-delegate               Thin bash shim → ai-dispatch
-│   ├── ai-peers                  CLI wrapper → src/ai-peers/cli.py
+├── bin/
+│   ├── ai-dispatch               Thin entrypoint → `src/ai_dispatch/cli.py`
+│   ├── ai-delegate               Preferred user-facing alias → `ai-dispatch`
+│   ├── ai-peers                  Wrapper → `src/ai-peers/cli.py`
 │   ├── codex-orchestrator        Launches Codex with orchestrator-reviewer role
 │   ├── agent-hard                Launches Cursor Agent with hard-programmer role
 │   ├── opencode-easy             Launches OpenCode with easy-programmer role
-│   └── claude-code-worker         Launches Claude Code with hard-programmer role
-├── src/ai-peers/                  Peer bus core (Python)
-│   ├── server.py                 FastMCP stdio server — exposes whoami, list_peers, recommend_peer, set_summary, send_message, check_messages
-│   ├── store.py                  PeerStore class + SQLite schema, peer lifecycle, message queue, routing logic
-│   ├── cli.py                    Argument parser for shell use of peer bus (peers, route, send, inbox, poll, whoami, cleanup, set-summary-for)
-│   ├── requirements.txt          Pinned dependency: mcp==1.27.0
-│   └── tests/test_store.py       Unit tests: message round-trip, set_summary, recommend_peer lane preference
-├── hooks/                         Agent context injection
-│   ├── ai-peers-context.mjs      Reads unread peer messages via cli.py and emits them as additional context for Cursor/Codex/OpenCode
+│   └── claude-code-worker        Launches Claude Code as a worker
+├── hooks/
+│   ├── ai-peers-context.mjs      Injects peer messages and completed background-job summaries
 │   └── codex-orchestrator-context.mjs  Injects orchestration policy into Codex session startup
-├── skills/agent-delegation/       Shared cross-tool skill
-│   └── SKILL.md                  Delegation instructions: when/how to use ai-delegate, routing rules, worker mapping
-├── examples/                      Setup documentation
-│   ├── SETUP.md                  Installation steps: venv, PATH, MCP registration, skill install, hook wiring
-│   └── ORIGIN_MAP.md             Maps exported files back to their canonical local paths
-└── README.md                      Project overview, commands, usage examples
+├── src/ai_dispatch/
+│   ├── cli.py                    CLI entrypoints, job lifecycle commands, dispatch execution
+│   ├── jobs.py                   JSON job store helpers, state paths, summaries, repo detection
+│   ├── adapters.py               Built-in worker commands, adapter registry loading, prompt assembly
+│   ├── routing.py                Deterministic classification, scoring, route planning, routing config
+│   ├── verify.py                 Verification config loading and post-run verification execution
+│   ├── worktree.py               Opt-in git worktree creation and cleanup
+│   ├── output.py                 Text and JSON-friendly render helpers
+│   └── tests/                    Unit and CLI integration coverage for dispatcher behavior
+├── src/ai-peers/
+│   ├── server.py                 FastMCP stdio server for peer presence and coordination
+│   ├── store.py                  SQLite-backed peer registry and message queue
+│   ├── cli.py                    Shell-facing CLI for peers, inbox, summaries, and routing hints
+│   ├── requirements.txt          Pinned MCP dependency
+│   └── tests/test_store.py       Unit tests for peer store behavior
+├── skills/agent-delegation/
+│   └── SKILL.md                  Shared delegation instructions
+├── examples/
+│   ├── SETUP.md                  Setup and configuration notes
+│   ├── adapters.example.json     Example adapter registry
+│   └── ORIGIN_MAP.md             Maps exported files back to canonical local paths
+└── README.md                     Product overview and operator docs
 ```
 
 ## Key Workflows
 
-### 1. Delegate a task to another agent
+### 1. Delegate work
 
-```
-ai-delegate --target <codex|cursor|opencode|claude|auto> --cwd "$PWD" --from-agent <caller> -- "<task>"
-```
-
-`ai-delegate` → `ai-dispatch` (Python). Builds a worker prompt, runs the target agent CLI as a subprocess, checks for failure markers, tries fallbacks in route order, saves a JSON run log to `~/.local/state/ai-dispatch/`.
-
-For long-running jobs:
-
-```
-ai-delegate --target auto --difficulty hard --background --notify-on-complete --cwd "$PWD" --from-agent codex -- "<task>"
+```bash
+ai-delegate --target auto --difficulty hard --cwd "$PWD" --from-agent codex -- "Debug the race condition"
 ```
 
-This creates a detached monitor-backed job under `~/.local/state/ai-dispatch/jobs/` and surfaces completion back into the caller's next prompt context.
+Default `auto` routing uses only:
 
-### 2. Discover peers and coordinate
+- `codex`
+- `claude`
+- `cursor`
+- `opencode`
 
-Agent inserts itself into `peers` table on startup via `PeerStore()`. Heartbeat thread keeps `last_seen` fresh. Stale peers (inactive >`ACTIVE_WINDOW_SECONDS` or dead PID) are cleaned automatically. Peers can `send_message` / `check_messages` for file-collision avoidance and status updates.
+Optional agents can join `auto` only through explicit routing config.
 
-### 3. Context injection (hooks)
+### 2. Inspect and retry jobs
 
-On each prompt submission, `ai-peers-context.mjs` polls the message bus and injects unread coordination messages into the agent's context. On session start, `codex-orchestrator-context.mjs` injects routing policy for Codex.
+```bash
+ai-dispatch list
+ai-dispatch show <job_id>
+ai-dispatch retry <job_id> --feedback "Tighten the fix"
+ai-dispatch watch <job_id>
+```
 
-### 4. Difficulty-based routing
+Job state is file-backed under `~/.local/state/ai-dispatch/` by default.
 
-`ai-dispatch` normalises difficulty (auto-detects from task text using hard markers like "debug", "refactor", "race condition"). Route order:
-- easy: `[opencode, cursor]`
-- hard: `[cursor, opencode]`
-- explicit target: `[target]` (no fallback)
+### 3. Verify results
+
+```bash
+ai-delegate --target opencode --verify default --cwd "$PWD" --from-agent codex -- "Add a simple settings toggle"
+```
+
+Verification is config-driven and runs only after a winning worker result.
+
+### 4. Use worktree isolation
+
+```bash
+ai-delegate --target cursor --worktree auto --cwd "$PWD" --from-agent codex -- "Refactor the auth flow safely"
+```
+
+Worktrees are opt-in and retained by default.
+
+### 5. Coordinate active sessions
+
+Peers register through the local SQLite-backed peer bus. Hooks poll unread messages and finished background jobs and inject them into the next prompt cycle. This is next-turn delivery, not a push channel.
 
 ## Known Risks
 
-- **Shell-delegated workers**: No native in-process handoff. Each delegation forks a full agent subprocess with its own timeout (default 900s).
-- **Background jobs**: Completion tracking is file-backed and local to one machine. It is robust enough for single-user workflows, but not a distributed queue.
-- **Message polling, not push**: Peer messages are only delivered on next prompt cycle via hooks. No mid-turn injection.
-- **SQLite store**: Single-machine, no concurrent-write guarantees beyond WAL mode. Sufficient for local single-user use.
-- **Hardcoded paths in wrappers**: `bin/ai-peers` and `bin/ai-delegate` reference home-directory paths (`~/.agents/vendor/ai-peers/`, `/Users/mikhail/.local/bin/ai-dispatch`). Must be adjusted per-install.
-- **PID-based liveness**: Default `SKIP_PID_CHECK=0` can incorrectly prune peers in containers where PID namespaces differ.
+- Shell-delegated workers are still full subprocesses with their own CLI quirks.
+- Completion delivery is still next-turn only.
+- Dispatch state is local JSON, not a distributed queue.
+- Peer state is single-machine SQLite with WAL mode.
+- There is no TUI, cost tracking, sandboxing, or auto-merge.

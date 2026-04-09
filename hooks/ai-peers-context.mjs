@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const PYTHON = "/Users/mikhail/.agents/vendor/ai-peers/.venv/bin/python";
-const CLI = "/Users/mikhail/.agents/vendor/ai-peers/cli.py";
-const DISPATCH = "/Users/mikhail/.local/bin/ai-dispatch";
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = process.env.AI_BRIDGE_ROOT || path.resolve(HERE, "..");
+const PYTHON = process.env.AI_BRIDGE_PEERS_PYTHON || "python3";
+const CLI = process.env.AI_BRIDGE_PEERS_CLI || path.join(ROOT, "src", "ai-peers", "cli.py");
+const DISPATCH = process.env.AI_BRIDGE_DISPATCH_BIN || path.join(ROOT, "bin", "ai-dispatch");
 const TOOL = process.env.GUARDRAIL_TOOL || "generic";
 const EVENT = process.env.GUARDRAIL_EVENT || "UserPromptSubmit";
 const SESSION_KEY = process.env.AI_PEERS_SESSION_KEY || "";
@@ -29,6 +33,9 @@ function summarizePrompt(text) {
 }
 
 function runCli(args) {
+  if (!existsSync(CLI)) {
+    return null;
+  }
   const result = spawnSync(PYTHON, [CLI, ...args], {
     env: process.env,
     encoding: "utf8",
@@ -44,7 +51,8 @@ function runCli(args) {
 }
 
 function runDispatch(args) {
-  const result = spawnSync(DISPATCH, args, {
+  const command = existsSync(DISPATCH) ? DISPATCH : "ai-dispatch";
+  const result = spawnSync(command, args, {
     env: process.env,
     encoding: "utf8",
   });
@@ -73,7 +81,7 @@ function formatContext(peer, messages) {
     lines.push(`- [${message.from_peer_id}] ${parts.join(" | ")} | message=${message.body}`);
   }
   if (peer?.role === "orchestrator-reviewer") {
-    lines.push("Routing policy: you are the orchestrator and reviewer. OpenCode handles easy implementation; Cursor Agent handles hard implementation; unresolved work returns to you.");
+    lines.push("Routing policy: you are the orchestrator and reviewer. The primary agents are Codex, Claude Code, Cursor Agent, and OpenCode. Auto-routing defaults to those four only.");
   }
   lines.push("Treat these as fresh peer updates. Resolve conflicts before making overlapping edits.");
   lines.push("</peer-messages>");
@@ -90,6 +98,9 @@ function formatCompletionContext(jobs) {
     const winner = job.winner || "none";
     const status = job.status || "unknown";
     const attempts = Array.isArray(job.attempts) ? job.attempts : [];
+    const classifier = job.classifier || {};
+    const verification = job.verification || {};
+    const worktree = job.worktree || {};
     const detail = attempts
       .map((attempt) => {
         const output = stripAnsi(attempt.stdout || attempt.stderr || "").replace(/\s+/g, " ").trim();
@@ -97,7 +108,17 @@ function formatCompletionContext(jobs) {
         return `${attempt.worker}[exit=${attempt.exit_code}] ${short}`;
       })
       .join(" || ");
-    lines.push(`- job=${job.job_id} status=${status} winner=${winner} difficulty=${job.difficulty} route=${(job.route || []).join(",")} | ${detail}`);
+    const suffix = [
+      classifier.category ? `category=${classifier.category}` : "",
+      classifier.complexity ? `complexity=${classifier.complexity}` : "",
+      verification.status ? `verify=${verification.status}` : "",
+      worktree.path ? `worktree=${worktree.path}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    lines.push(
+      `- job=${job.job_id} status=${status} winner=${winner} difficulty=${job.difficulty} route=${(job.route || []).join(",")} ${suffix} | ${detail}`
+    );
   }
   lines.push("These notifications come from background delegated jobs finishing. Use them before launching overlapping follow-up work.");
   lines.push("</delegation-completions>");

@@ -15,9 +15,9 @@ STORE = PeerStore()
 MCP = FastMCP(
     "ai-peers",
     instructions=(
-        "Use Codex as the orchestrator and code reviewer, OpenCode for easy implementation tasks, "
-        "and Cursor Agent for hard implementation tasks. If a hard task cannot be solved there, "
-        "route it back to Codex."
+        "Use Codex as the orchestrator and reviewer. The primary agents are Codex, Claude Code, "
+        "Cursor Agent, and OpenCode. Auto-routing defaults to those four only, with Cursor favored "
+        "for harder implementation work and OpenCode favored for simpler implementation work."
     ),
     json_response=True,
 )

@@ -25,10 +25,6 @@ Scripts live in `bin/`:
 - `opencode-easy`
 - `claude-code-worker`
 
-Additional explicit targets supported natively by the dispatcher:
-
-- `goose`
-
 ## 3. Register the MCP server
 
 The peer bus MCP server is:
@@ -43,7 +39,23 @@ Use the Python interpreter from the local virtualenv:
 src/ai-peers/.venv/bin/python src/ai-peers/server.py
 ```
 
-## 4. Install the shared skill
+## 4. Understand the agent model
+
+Primary agents:
+
+- `codex`
+- `claude`
+- `cursor`
+- `opencode`
+
+Additional agents:
+
+- explicit built-in target: `goose`
+- adapter-configured targets: `gemini`, `aider`, `amp`, `cline`, `droid`, and other shell-callable tools
+
+`ai-delegate --target auto` routes only among the primary four unless optional agents are explicitly allowlisted in routing config.
+
+## 5. Install the shared skill
 
 The shareable skill is:
 
@@ -54,16 +66,69 @@ skills/agent-delegation/SKILL.md
 It teaches supported tools how to call:
 
 ```bash
-ai-delegate --target codex|cursor|opencode|claude|goose|gemini|aider|amp|cline|droid|auto ...
+ai-delegate --target codex|claude|cursor|opencode|goose|<adapter>|auto ...
 ```
 
-For long-running work it also supports:
+## 6. Optional routing config
+
+Routing config is read from:
+
+```text
+.ai-bridge/routing.json
+~/.config/ai-bridge/routing.json
+```
+
+Example:
+
+```json
+{
+  "auto_routing": {
+    "enabled_agents": ["codex", "claude", "cursor", "opencode"],
+    "optional_allowlist": ["goose"]
+  },
+  "agents": {
+    "goose": {
+      "scores": {
+        "simple_edit": 5,
+        "implementation": 6,
+        "debugging": 6,
+        "refactor": 5,
+        "research": 5,
+        "review": 4
+      }
+    }
+  }
+}
+```
+
+## 7. Optional verification config
+
+Verification config is read from:
+
+```text
+.ai-bridge/verify.json
+~/.config/ai-bridge/verify.json
+```
+
+Example:
+
+```json
+{
+  "profiles": {
+    "default": {
+      "command": ["python3", "-m", "unittest", "discover", "-s", "src/ai-peers/tests", "-p", "test_*.py"]
+    }
+  }
+}
+```
+
+Use it with:
 
 ```bash
-ai-delegate --target auto --difficulty hard --background --notify-on-complete ...
+ai-delegate --target opencode --verify default --cwd "$PWD" --from-agent codex -- "Add a simple settings toggle"
 ```
 
-## 5. Optional hook wiring
+## 8. Optional hook wiring
 
 The `hooks/` directory contains:
 
@@ -73,19 +138,27 @@ The `hooks/` directory contains:
 These are used for:
 
 - automatic unread peer-message injection
+- background-job completion summaries
 - Codex startup orchestration guidance
 
-## 6. Claude Code
+## 9. Optional worktree isolation
 
-`Claude Code` is supported as an explicit delegation target:
+Use one of:
 
 ```bash
-ai-delegate --target claude --cwd "$PWD" --from-agent codex -- "Investigate the bug"
+ai-delegate --target cursor --worktree auto --cwd "$PWD" --from-agent codex -- "Refactor the auth flow safely"
+ai-delegate --target cursor --worktree branch:auth-refactor --cwd "$PWD" --from-agent codex -- "Refactor the auth flow safely"
 ```
 
-## 7. Adapter Registry
+Worktrees are retained by default. Remove them manually with:
 
-Non-native targets are configured via:
+```bash
+ai-dispatch cleanup-worktree <job_id>
+```
+
+## 10. Adapter registry
+
+Non-primary additional targets are configured via:
 
 ```text
 ~/.config/ai-bridge/adapters.json
@@ -97,9 +170,17 @@ Use the example file in:
 examples/adapters.example.json
 ```
 
-This is the path for targets like `gemini`, `aider`, `amp`, `cline`, and `droid`.
+## 11. Portability env vars
+
+- `AI_BRIDGE_ROOT`
+- `AI_BRIDGE_DISPATCH_BIN`
+- `AI_BRIDGE_PEERS_PYTHON`
+- `AI_BRIDGE_PEERS_CLI`
+- `AI_BRIDGE_CONFIG_DIR`
+- `AI_DISPATCH_STATE_ROOT`
 
 ## Safety
 
 - Do not copy your real config files with API tokens into a public repo.
 - Recreate config wiring from safe snippets instead of publishing live local config.
+- This project does not include a TUI, cost tracking, sandboxing, or auto-merge.

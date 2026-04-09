@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec python3 /Users/mikhail/.agents/vendor/ai-peers/cli.py "$@"
+
+ROOT="${AI_BRIDGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CLI="${AI_BRIDGE_PEERS_CLI:-$ROOT/src/ai-peers/cli.py}"
+PYTHON_BIN="${AI_BRIDGE_PEERS_PYTHON:-python3}"
+
+if [[ ! -f "$CLI" ]]; then
+  echo "ai-peers: unable to find cli.py. Set AI_BRIDGE_PEERS_CLI or AI_BRIDGE_ROOT." >&2
+  exit 1
+fi
+
+exec "$PYTHON_BIN" "$CLI" "$@"

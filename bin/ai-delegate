@@ -1,3 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec /Users/mikhail/.local/bin/ai-dispatch "$@"
+
+ROOT="${AI_BRIDGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+DISPATCH="${AI_BRIDGE_DISPATCH_BIN:-$ROOT/bin/ai-dispatch}"
+
+if [[ ! -x "$DISPATCH" ]]; then
+  if command -v ai-dispatch >/dev/null 2>&1; then
+    DISPATCH="$(command -v ai-dispatch)"
+  else
+    echo "ai-delegate: unable to find ai-dispatch. Set AI_BRIDGE_DISPATCH_BIN or AI_BRIDGE_ROOT." >&2
+    exit 1
+  fi
+fi
+
+exec "$DISPATCH" "$@"

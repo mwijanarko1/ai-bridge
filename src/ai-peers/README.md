@@ -2,7 +2,7 @@
 
 Local peer coordination for terminal AI sessions.
 
-This is a lightweight variant of the `claude-peers` idea for tools that support MCP but do not expose Claude's channel-push protocol. It gives Codex, Cursor Agent, OpenCode, and Claude Code a shared peer registry and message inbox via a local SQLite database.
+This is a lightweight variant of the `claude-peers` idea for tools that support MCP but do not expose Claude's channel-push protocol. It gives Codex, Claude Code, Cursor Agent, and OpenCode a shared peer registry and message inbox via a local SQLite database.
 
 ## What it does
 
@@ -16,15 +16,18 @@ This is a lightweight variant of the `claude-peers` idea for tools that support 
 ## Intended role split
 
 - Codex: `orchestrator-reviewer`
+- Claude Code: `worker`
 - OpenCode: `easy-programmer`
 - Cursor Agent: `hard-programmer`
-- Claude Code: `hard-programmer`
 
-For implementation routing, the default order is:
+The dispatcher's default `auto` pool is the primary four:
 
-- easy: OpenCode -> Cursor Agent -> Codex
-- hard: Cursor Agent -> Codex
-- review: Codex
+- Codex
+- Claude Code
+- Cursor Agent
+- OpenCode
+
+Additional tools may exist, but they are not part of the default auto-routing pool.
 
 ## Limit
 
