@@ -1,0 +1,32 @@
+{
+  "gemini": {
+    "command": [
+      "YOUR_GEMINI_COMMAND",
+      "{prompt}"
+    ]
+  },
+  "aider": {
+    "command": [
+      "YOUR_AIDER_COMMAND",
+      "{prompt}"
+    ]
+  },
+  "amp": {
+    "command": [
+      "YOUR_AMP_COMMAND",
+      "{prompt}"
+    ]
+  },
+  "cline": {
+    "command": [
+      "YOUR_CLINE_WRAPPER",
+      "{prompt}"
+    ]
+  },
+  "droid": {
+    "command": [
+      "YOUR_DROID_COMMAND",
+      "{prompt}"
+    ]
+  }
+}

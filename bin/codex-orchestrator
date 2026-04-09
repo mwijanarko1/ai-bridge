@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export AI_PEERS_CLIENT="codex"
+export AI_PEERS_ROLE="orchestrator-reviewer"
+export AI_PEERS_SESSION_KEY="${AI_PEERS_SESSION_KEY:-$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')}"
+export AI_PEERS_LAUNCH_CWD="${PWD}"
+export AI_PEERS_SUMMARY="${AI_PEERS_SUMMARY:-Codex orchestrator and reviewer}"
+exec codex "$@"
