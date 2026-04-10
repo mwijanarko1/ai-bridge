@@ -10,8 +10,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PEERS_CLI = REPO_ROOT / "src" / "ai-peers" / "cli.py"
-PEERS_SRC = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
 
 
 class PeersCliContractTests(unittest.TestCase):
@@ -23,14 +22,14 @@ class PeersCliContractTests(unittest.TestCase):
         self.env["AI_PEERS_SESSION_KEY"] = "cli-contract-session"
         self.env["AI_PEERS_CLIENT"] = "codex"
         self.env["AI_PEERS_ROLE"] = "orchestrator-reviewer"
-        self.env["PYTHONPATH"] = str(PEERS_SRC)
+        self.env["PYTHONPATH"] = str(SRC_ROOT)
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(PEERS_CLI), *args],
+            [sys.executable, "-m", "ai_peers.cli", *args],
             cwd=str(REPO_ROOT),
             env=self.env,
             stdout=subprocess.PIPE,

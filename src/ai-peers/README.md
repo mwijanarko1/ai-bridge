@@ -35,10 +35,10 @@ Messages are not injected into model context automatically. Cursor Agent and Ope
 
 ## Files
 
-- `server.py`: stdio MCP server
-- `store.py`: shared SQLite registry and message store
-- `cli.py`: shell-friendly CLI
-- `requirements.txt`: pinned MCP SDK dependency for the local virtualenv
+- `server.py`: compatibility shim for the packaged stdio MCP server
+- `store.py`: compatibility shim for the packaged SQLite peer registry
+- `cli.py`: compatibility shim for the packaged shell-friendly CLI
+- `../ai_peers/`: installable Python package with the real implementation and tests
 
 ## Launch commands
 
@@ -46,6 +46,7 @@ Messages are not injected into model context automatically. Cursor Agent and Ope
 - `opencode-easy`: launch OpenCode with `easy-programmer`
 - `agent-hard`: launch Cursor Agent with `hard-programmer`
 - `claude-code-worker`: launch Claude Code with `hard-programmer`
+- `ai-peers-mcp`: launch the peer bus MCP server
 - `ai-peers route --task-kind implement --difficulty easy`: recommend the current coding owner
 - `ai-peers route --task-kind review --difficulty hard`: route review back to Codex
 

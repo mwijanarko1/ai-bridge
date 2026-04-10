@@ -27,6 +27,7 @@ Delegation is Hermes-style: one agent shells out to another agent CLI as a worke
 │   ├── ai-dispatch               Thin entrypoint → `src/ai_dispatch/cli.py`
 │   ├── ai-delegate               Preferred user-facing alias → `ai-dispatch`
 │   ├── ai-peers                  Wrapper → `src/ai-peers/cli.py`
+│   ├── ai-peers-mcp              Installed console script → `ai_dispatch.entrypoints:peers_server_main`
 │   ├── codex-orchestrator        Launches Codex with orchestrator-reviewer role
 │   ├── agent-hard                Launches Cursor Agent with hard-programmer role
 │   ├── opencode-easy             Launches OpenCode with easy-programmer role
@@ -36,6 +37,7 @@ Delegation is Hermes-style: one agent shells out to another agent CLI as a worke
 │   └── codex-orchestrator-context.mjs  Injects orchestration policy into Codex session startup
 ├── src/ai_dispatch/
 │   ├── cli.py                    CLI entrypoints, job lifecycle commands, dispatch execution
+│   ├── entrypoints.py            Console-script shims for packaged installs and worker launchers
 │   ├── jobs.py                   JSON job store helpers, state paths, summaries, repo detection
 │   ├── adapters.py               Built-in worker commands, adapter registry loading, prompt assembly
 │   ├── routing.py                Deterministic classification, scoring, route planning, routing config
@@ -43,12 +45,15 @@ Delegation is Hermes-style: one agent shells out to another agent CLI as a worke
 │   ├── worktree.py               Opt-in git worktree creation and cleanup
 │   ├── output.py                 Text and JSON-friendly render helpers
 │   └── tests/                    Unit and CLI integration coverage for dispatcher behavior
+├── src/ai_peers/
+│   ├── cli.py                    Installable ai_peers package CLI
+│   ├── server.py                 Installable peer-bus MCP server
+│   ├── store.py                  Installable SQLite-backed peer registry and message queue
+│   └── tests/                    Package-based peer CLI and store tests
 ├── src/ai-peers/
-│   ├── server.py                 FastMCP stdio server for peer presence and coordination
-│   ├── store.py                  SQLite-backed peer registry and message queue
-│   ├── cli.py                    Shell-facing CLI for peers, inbox, summaries, and routing hints
-│   ├── requirements.txt          Pinned MCP dependency
-│   └── tests/test_store.py       Unit tests for peer store behavior
+│   ├── server.py                 Compatibility shim for older repo-local paths
+│   ├── store.py                  Compatibility shim for older imports
+│   └── cli.py                    Compatibility shim for older repo-local paths
 ├── skills/agent-delegation/
 │   └── SKILL.md                  Shared delegation instructions
 ├── examples/

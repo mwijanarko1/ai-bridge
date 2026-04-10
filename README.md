@@ -6,15 +6,42 @@ Local multi-agent switchboard for coding agents and CLIs.
 
 ## Install
 
-`ai-bridge` is meant to be run from a local clone of this repository. It assumes the agent CLIs you want to delegate to are already installed and authenticated on your machine.
+`ai-bridge` is meant to be run with Python 3.11+ on your machine. The agent CLIs you delegate to (Codex, Cursor `agent`, OpenCode, Claude Code, and so on) must already be installed and authenticated separately.
 
-From the repo root:
+### pipx (recommended)
+
+From any directory, with the repo as the source tree (or after publishing to an index):
+
+```bash
+pipx install /absolute/path/to/ai-bridge
+# or: pipx install .
+# or: pipx install git+<repo-url>
+```
+
+This installs `ai-dispatch`, `ai-delegate`, `ai-peers`, `ai-peers-mcp`, `codex-orchestrator`, `agent-hard`, `opencode-easy`, and `claude-code-worker` on your PATH.
+
+Optional: point hooks or scripts at this checkout with:
+
+```bash
+export AI_BRIDGE_ROOT="/absolute/path/to/ai-bridge"
+```
+
+You do not need a separate `ai-peers` venv when using pipx; dependencies come from the pipx environment.
+
+### Editable install from a clone
 
 ```bash
 cd ai-bridge
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```
 
-python3 -m venv src/ai-peers/.venv
-src/ai-peers/.venv/bin/pip install -r src/ai-peers/requirements.txt
+Then either use `.venv/bin/ai-dispatch` (and the other entry points) or add `.venv/bin` to `PATH`.
+
+### Legacy: run from a clone without installing
+
+```bash
+cd ai-bridge
 
 mkdir -p ~/.local/bin
 ln -sf "$PWD/bin/ai-dispatch" ~/.local/bin/ai-dispatch
@@ -26,12 +53,20 @@ ln -sf "$PWD/bin/opencode-easy" ~/.local/bin/opencode-easy
 ln -sf "$PWD/bin/claude-code-worker" ~/.local/bin/claude-code-worker
 ```
 
+The `bin/*` wrappers add `src/` to `PYTHONPATH` so `ai_dispatch` and `ai_peers` resolve without an install. Peer coordination code lives in the import package `ai_peers` under `src/ai_peers/`; `src/ai-peers/` only holds thin shims for older paths (for example `AI_BRIDGE_PEERS_CLI` defaults in some hooks).
+
 Add the wrappers and repo path to your shell config:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 export AI_BRIDGE_ROOT="/absolute/path/to/ai-bridge"
-export AI_BRIDGE_PEERS_PYTHON="$AI_BRIDGE_ROOT/src/ai-peers/.venv/bin/python"
+```
+
+If you override the peers CLI, you can still use a dedicated interpreter:
+
+```bash
+export AI_BRIDGE_PEERS_PYTHON="/path/to/python3"
+export AI_BRIDGE_PEERS_CLI="/path/to/custom/cli.py"
 ```
 
 Reload your shell, then smoke-test the install:
@@ -40,6 +75,7 @@ Reload your shell, then smoke-test the install:
 ai-dispatch --help
 ai-peers --help
 ai-delegate --help
+command -v ai-peers-mcp
 ```
 
 ## Primary Agents
@@ -83,6 +119,8 @@ Additional agents do not participate in `--target auto` unless they are explicit
   - dispatcher engine and lifecycle commands
 - `ai-peers`
   - local peer-bus CLI
+- `ai-peers-mcp`
+  - launch the peer-bus MCP server
 - `codex-orchestrator`
   - launch Codex as orchestrator/reviewer
 - `agent-hard`
@@ -196,7 +234,7 @@ Verification config example:
 {
   "profiles": {
     "default": {
-      "command": ["python3", "-m", "unittest", "discover", "-s", "src/ai-peers/tests", "-p", "test_*.py"]
+      "command": ["python3", "-m", "unittest", "discover", "-s", "src/ai_peers/tests", "-p", "test_*.py"]
     }
   }
 }

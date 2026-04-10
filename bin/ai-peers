@@ -2,12 +2,11 @@
 set -euo pipefail
 
 ROOT="${AI_BRIDGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-CLI="${AI_BRIDGE_PEERS_CLI:-$ROOT/src/ai-peers/cli.py}"
+export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 PYTHON_BIN="${AI_BRIDGE_PEERS_PYTHON:-python3}"
 
-if [[ ! -f "$CLI" ]]; then
-  echo "ai-peers: unable to find cli.py. Set AI_BRIDGE_PEERS_CLI or AI_BRIDGE_ROOT." >&2
-  exit 1
+if [[ -n "${AI_BRIDGE_PEERS_CLI:-}" ]]; then
+  exec "$PYTHON_BIN" "$AI_BRIDGE_PEERS_CLI" "$@"
 fi
 
-exec "$PYTHON_BIN" "$CLI" "$@"
+exec "$PYTHON_BIN" -m ai_peers.cli "$@"

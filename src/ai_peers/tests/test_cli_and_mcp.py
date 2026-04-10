@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import json
 import os
 import subprocess
@@ -13,12 +12,10 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PEERS_SRC = Path(__file__).resolve().parents[1]
-CLI_PATH = PEERS_SRC / "cli.py"
-SERVER_PATH = PEERS_SRC / "server.py"
+SRC_ROOT = REPO_ROOT / "src"
 
-if str(PEERS_SRC) not in sys.path:
-    sys.path.insert(0, str(PEERS_SRC))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 # Strip when spawning CLI so parent delegated-worker env (session key, role, etc.) cannot satisfy
 # identity checks that these tests expect to fail without --peer-id.
@@ -70,11 +67,11 @@ class PeerCliTests(unittest.TestCase):
             os.environ.pop(key, None)
         self.base_env["AI_PEERS_DB"] = os.path.join(self.tempdir.name, "peers.db")
         self.base_env["AI_PEERS_SKIP_PID_CHECK"] = "1"
-        self.base_env["PYTHONPATH"] = f"{PEERS_SRC}:{self.base_env.get('PYTHONPATH', '')}"
+        self.base_env["PYTHONPATH"] = f"{SRC_ROOT}:{self.base_env.get('PYTHONPATH', '')}"
         os.environ["AI_PEERS_DB"] = self.base_env["AI_PEERS_DB"]
         os.environ["AI_PEERS_SKIP_PID_CHECK"] = "1"
         global store_module
-        import store as store_module  # type: ignore
+        import ai_peers.store as store_module  # type: ignore
 
         store_module = importlib.reload(store_module)
 
@@ -94,7 +91,7 @@ class PeerCliTests(unittest.TestCase):
     def _run_cli(self, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         merged = self._peer_cli_env(env)
         return subprocess.run(
-            [sys.executable, str(CLI_PATH), *args],
+            [sys.executable, "-m", "ai_peers.cli", *args],
             cwd=str(REPO_ROOT),
             env=merged,
             stdout=subprocess.PIPE,
@@ -176,10 +173,13 @@ class PeerMcpParityTests(unittest.TestCase):
         os.environ["AI_PEERS_LAUNCH_CWD"] = "/tmp/repo"
         os.environ["AI_PEERS_SUMMARY"] = "mcp parity"
         global store_module
-        import store as store_module  # type: ignore
+        import ai_peers.store as store_module  # type: ignore
 
         store_module = importlib.reload(store_module)
-        self.saved_modules = {name: sys.modules.get(name) for name in ("mcp", "mcp.server", "mcp.server.fastmcp")}
+        self.saved_modules = {
+            name: sys.modules.get(name)
+            for name in ("mcp", "mcp.server", "mcp.server.fastmcp", "ai_peers.server")
+        }
         self.server_module = self._load_server_module()
 
     def tearDown(self) -> None:
@@ -227,11 +227,10 @@ class PeerMcpParityTests(unittest.TestCase):
         sys.modules["mcp"] = mcp_mod
         sys.modules["mcp.server"] = mcp_server_mod
         sys.modules["mcp.server.fastmcp"] = fastmcp_mod
-        spec = importlib.util.spec_from_file_location("ai_peers_server_test", SERVER_PATH)
-        module = importlib.util.module_from_spec(spec)
-        assert spec is not None and spec.loader is not None
-        spec.loader.exec_module(module)
-        return module
+        sys.modules.pop("ai_peers.server", None)
+        import ai_peers.server as server_module  # type: ignore
+
+        return importlib.reload(server_module)
 
     def test_server_tool_contracts_match_store_behavior(self) -> None:
         peer_easy = store_module.PeerStore(

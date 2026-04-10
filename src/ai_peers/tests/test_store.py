@@ -8,9 +8,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-PEERS_SRC = Path(__file__).resolve().parents[1]
-if str(PEERS_SRC) not in sys.path:
-    sys.path.insert(0, str(PEERS_SRC))
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 class PeerStoreTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class PeerStoreTests(unittest.TestCase):
         os.environ["AI_PEERS_DB"] = os.path.join(self.tempdir.name, "peers.db")
         os.environ["AI_PEERS_SKIP_PID_CHECK"] = "1"
         global store_module
-        import store as store_module  # type: ignore
+        import ai_peers.store as store_module  # type: ignore
 
         store_module = importlib.reload(store_module)
 
@@ -328,7 +329,7 @@ class PeerStoreTests(unittest.TestCase):
             store_module = importlib.reload(store_module)
 
     def test_store_api_matches_mcp_tool_contracts(self) -> None:
-        """Keys mirror src/ai-peers/server.py tool wrappers (stdio MCP not started)."""
+        """Keys mirror ai_peers.server MCP tool wrappers (stdio MCP not started)."""
         store = store_module.PeerStore(
             {
                 "peer_id": "peer-mcp",

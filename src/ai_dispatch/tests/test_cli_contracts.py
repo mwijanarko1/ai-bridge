@@ -157,14 +157,14 @@ class BuildPromptContractTests(unittest.TestCase):
         from ai_dispatch.adapters import build_prompt
 
         text = build_prompt(
-            user_prompt="Please verify quickly. From repo root run: cd src/ai-peers && python3 -m unittest discover -s tests -v",
+            user_prompt="Please verify quickly. From repo root run: python3 -m unittest discover -s src/ai_peers/tests -v",
             difficulty="easy",
             cwd="/tmp/repo",
             source="codex",
             target="opencode",
         )
         self.assertIn("Execution-first", text)
-        self.assertIn("cd src/ai-peers && python3 -m unittest discover -s tests -v", text)
+        self.assertIn("python3 -m unittest discover -s src/ai_peers/tests -v", text)
 
     def test_execution_first_when_task_starts_with_shell_command(self) -> None:
         from ai_dispatch.adapters import build_prompt

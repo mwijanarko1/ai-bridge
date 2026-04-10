@@ -10,9 +10,10 @@ import time
 import unittest
 from pathlib import Path
 
-PEERS_SRC = Path(__file__).resolve().parents[1]
-if str(PEERS_SRC) not in sys.path:
-    sys.path.insert(0, str(PEERS_SRC))
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 def registration(
@@ -46,7 +47,7 @@ class PeerStoreExtendedTests(unittest.TestCase):
         os.environ["AI_PEERS_SKIP_PID_CHECK"] = "1"
         os.environ["AI_PEERS_ACTIVE_WINDOW"] = "1"
         global store_module
-        import store as store_module  # type: ignore
+        import ai_peers.store as store_module  # type: ignore
 
         store_module = importlib.reload(store_module)
 

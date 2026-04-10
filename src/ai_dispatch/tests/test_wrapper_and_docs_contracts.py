@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -7,18 +8,41 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class WrapperContractTests(unittest.TestCase):
-    def test_delegate_wrapper_respects_override_env(self) -> None:
+    def test_delegate_wrapper_invokes_python_module(self) -> None:
         script = (REPO_ROOT / "bin" / "ai-delegate").read_text(encoding="utf-8")
         self.assertIn("AI_BRIDGE_ROOT", script)
-        self.assertIn("AI_BRIDGE_DISPATCH_BIN", script)
-        self.assertIn('exec "$DISPATCH" "$@"', script)
+        self.assertIn("PYTHONPATH", script)
+        self.assertIn("delegate_main", script)
+        self.assertIn("ai_dispatch.entrypoints", script)
+
+    def test_delegate_entrypoint_resolves_dispatch_like_bash_contract(self) -> None:
+        src = (REPO_ROOT / "src" / "ai_dispatch" / "entrypoints.py").read_text(encoding="utf-8")
+        self.assertIn("AI_BRIDGE_DISPATCH_BIN", src)
+        self.assertIn("AI_BRIDGE_ROOT", src)
+        self.assertIn("ai-dispatch", src)
 
     def test_peers_wrapper_respects_cli_and_python_overrides(self) -> None:
         script = (REPO_ROOT / "bin" / "ai-peers").read_text(encoding="utf-8")
         self.assertIn("AI_BRIDGE_ROOT", script)
         self.assertIn("AI_BRIDGE_PEERS_CLI", script)
         self.assertIn("AI_BRIDGE_PEERS_PYTHON", script)
-        self.assertIn('exec "$PYTHON_BIN" "$CLI" "$@"', script)
+        self.assertIn("ai_peers.cli", script)
+        self.assertIn("PYTHONPATH", script)
+
+    def test_pyproject_declares_console_scripts(self) -> None:
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        scripts = pyproject["project"]["scripts"]
+        for command in (
+            "ai-dispatch",
+            "ai-delegate",
+            "ai-peers",
+            "ai-peers-mcp",
+            "codex-orchestrator",
+            "agent-hard",
+            "opencode-easy",
+            "claude-code-worker",
+        ):
+            self.assertIn(command, scripts)
 
     def test_worker_launchers_set_peer_context(self) -> None:
         launcher_expectations = {

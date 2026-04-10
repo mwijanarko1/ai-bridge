@@ -1,23 +1,30 @@
 # Setup Notes
 
-These are the minimum wiring steps for the exported source.
+These are the minimum wiring steps for the exported source. For open-source usage, the canonical install path is `pipx install .` from the repo root.
 
 Assumption: the machine already has the relevant CLIs installed and authenticated. This document does not cover login flows.
 
-## 1. Install the peer bus dependency
+## 1. Install the package
 
-From `src/ai-peers/`:
+Recommended from the repo root:
+
+```bash
+pipx install .
+```
+
+If you are developing from a source checkout instead:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .
 ```
 
 ## 2. Put the wrapper scripts on your PATH
 
-Scripts live in `bin/`:
+With `pipx`, the commands are installed globally. In a source checkout, scripts also live in `bin/`:
 
 - `ai-peers`
+- `ai-peers-mcp`
 - `ai-delegate`
 - `ai-dispatch`
 - `codex-orchestrator`
@@ -27,16 +34,16 @@ Scripts live in `bin/`:
 
 ## 3. Register the MCP server
 
-The peer bus MCP server is:
+The preferred MCP server command after install is:
 
 ```text
-src/ai-peers/server.py
+ai-peers-mcp
 ```
 
-Use the Python interpreter from the local virtualenv:
+If you are developing from a local virtualenv, you can also use:
 
 ```text
-src/ai-peers/.venv/bin/python src/ai-peers/server.py
+python -m ai_peers.server
 ```
 
 ## 4. Understand the agent model
@@ -116,7 +123,7 @@ Example:
 {
   "profiles": {
     "default": {
-      "command": ["python3", "-m", "unittest", "discover", "-s", "src/ai-peers/tests", "-p", "test_*.py"]
+      "command": ["python3", "-m", "unittest", "discover", "-s", "src/ai_peers/tests", "-p", "test_*.py"]
     }
   }
 }
