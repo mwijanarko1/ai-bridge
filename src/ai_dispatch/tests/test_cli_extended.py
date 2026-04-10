@@ -229,6 +229,40 @@ print(json.dumps({"worker": name, "argv": sys.argv[1:], "cwd": os.getcwd()}))
         self.assertIn("attempts:", shown.stdout)
         self.assertIn("argv", shown.stdout)
 
+    def test_foreground_non_json_streams_worker_output_before_summary(self) -> None:
+        result = self._run(
+            "--target",
+            "opencode",
+            "--from-agent",
+            "codex",
+            "--cwd",
+            str(self.repo_dir),
+            "--",
+            "Add a simple settings toggle",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        non_blank_lines = [line for line in result.stdout.splitlines() if line.strip()]
+        self.assertTrue(non_blank_lines, result.stdout)
+        self.assertTrue(non_blank_lines[0].startswith("{"), result.stdout)
+        self.assertIn("[ai-dispatch] winner=opencode", result.stdout)
+
+    def test_json_mode_remains_machine_readable(self) -> None:
+        result = self._run(
+            "--target",
+            "opencode",
+            "--json",
+            "--from-agent",
+            "codex",
+            "--cwd",
+            str(self.repo_dir),
+            "--",
+            "Add a simple settings toggle",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["winner"], "opencode")
+        self.assertEqual(payload["attempts"][0]["worker"], "opencode")
+
     def test_retry_preserves_routing_inputs(self) -> None:
         initial = self._run(
             "--target",

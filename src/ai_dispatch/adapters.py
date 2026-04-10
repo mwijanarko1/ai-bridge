@@ -147,17 +147,23 @@ def render_adapter_command(
     return rendered
 
 
-def builtin_worker_command(worker: str, prompt: str, cwd: str) -> list[str]:
+def worker_supports_permission_relay(worker: str) -> bool:
+    return normalize_target(worker) == "codex"
+
+
+def builtin_worker_command(worker: str, prompt: str, cwd: str, *, permission_policy: str = "skip") -> list[str]:
     if worker == "codex":
-        return [
+        command = [
             "codex",
             "exec",
             "--skip-git-repo-check",
-            "--full-auto",
             "--cd",
             cwd,
-            prompt,
         ]
+        if permission_policy == "skip":
+            command.append("--full-auto")
+        command.append(prompt)
+        return command
     if worker == "claude":
         return [
             "claude-code-worker",
@@ -201,10 +207,18 @@ def builtin_worker_command(worker: str, prompt: str, cwd: str) -> list[str]:
     raise ValueError(f"Unknown worker '{worker}'")
 
 
-def worker_command(worker: str, prompt: str, cwd: str, source: str, difficulty: str) -> list[str]:
+def worker_command(
+    worker: str,
+    prompt: str,
+    cwd: str,
+    source: str,
+    difficulty: str,
+    *,
+    permission_policy: str = "skip",
+) -> list[str]:
     normalized = normalize_target(worker)
     if normalized in BUILTIN_TARGETS:
-        return builtin_worker_command(normalized, prompt, cwd)
+        return builtin_worker_command(normalized, prompt, cwd, permission_policy=permission_policy)
 
     adapters = load_adapter_config()
     adapter = adapters.get(normalized) or adapters.get(worker)

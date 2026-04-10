@@ -13,6 +13,7 @@ STATE_ROOT = Path(os.environ.get("AI_DISPATCH_STATE_ROOT", "~/.local/state/ai-di
 JOBS_DIR = STATE_ROOT / "jobs"
 LOGS_DIR = STATE_ROOT / "logs"
 WORKTREES_DIR = STATE_ROOT / "worktrees"
+PERMISSION_RESPONSES_DIR = STATE_ROOT / "permission-responses"
 CONFIG_DIR = Path(os.environ.get("AI_BRIDGE_CONFIG_DIR", "~/.config/ai-bridge")).expanduser()
 
 DEFAULT_TIMEOUT = 900
@@ -28,6 +29,7 @@ def ensure_state_root() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     WORKTREES_DIR.mkdir(parents=True, exist_ok=True)
+    PERMISSION_RESPONSES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def detect_repo_root(cwd: str) -> str | None:
@@ -58,6 +60,10 @@ def generate_job_id() -> str:
 
 def job_path(job_id: str) -> Path:
     return JOBS_DIR / f"{job_id}.json"
+
+
+def permission_response_path(job_id: str) -> Path:
+    return PERMISSION_RESPONSES_DIR / f"{job_id}.json"
 
 
 def save_job(job: dict[str, Any]) -> str:
@@ -152,4 +158,12 @@ def default_artifacts() -> dict[str, Any]:
         "job_file": None,
         "attempt_logs": [],
         "verification_log": None,
+    }
+
+
+def default_permission_state(policy: str) -> dict[str, Any]:
+    return {
+        "policy": policy,
+        "pending": None,
+        "events": [],
     }

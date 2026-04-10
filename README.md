@@ -4,6 +4,44 @@ Local multi-agent switchboard for coding agents and CLIs.
 
 `ai-bridge` is an opinionated Hermes-style delegation system: one agent shells out to another agent CLI as a worker, stores the job as local JSON state, and feeds the result back into the next prompt cycle through hooks.
 
+## Install
+
+`ai-bridge` is meant to be run from a local clone of this repository. It assumes the agent CLIs you want to delegate to are already installed and authenticated on your machine.
+
+From the repo root:
+
+```bash
+cd ai-bridge
+
+python3 -m venv src/ai-peers/.venv
+src/ai-peers/.venv/bin/pip install -r src/ai-peers/requirements.txt
+
+mkdir -p ~/.local/bin
+ln -sf "$PWD/bin/ai-dispatch" ~/.local/bin/ai-dispatch
+ln -sf "$PWD/bin/ai-delegate" ~/.local/bin/ai-delegate
+ln -sf "$PWD/bin/ai-peers" ~/.local/bin/ai-peers
+ln -sf "$PWD/bin/codex-orchestrator" ~/.local/bin/codex-orchestrator
+ln -sf "$PWD/bin/agent-hard" ~/.local/bin/agent-hard
+ln -sf "$PWD/bin/opencode-easy" ~/.local/bin/opencode-easy
+ln -sf "$PWD/bin/claude-code-worker" ~/.local/bin/claude-code-worker
+```
+
+Add the wrappers and repo path to your shell config:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+export AI_BRIDGE_ROOT="/absolute/path/to/ai-bridge"
+export AI_BRIDGE_PEERS_PYTHON="$AI_BRIDGE_ROOT/src/ai-peers/.venv/bin/python"
+```
+
+Reload your shell, then smoke-test the install:
+
+```bash
+ai-dispatch --help
+ai-peers --help
+ai-delegate --help
+```
+
 ## Primary Agents
 
 These four are the default product model:

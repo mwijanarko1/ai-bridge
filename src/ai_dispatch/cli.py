@@ -3,19 +3,28 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pty
 import re
+import select
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
-from .adapters import build_prompt, normalize_target, worker_command
+from .adapters import (
+    build_prompt,
+    normalize_target,
+    worker_command,
+    worker_supports_permission_relay,
+)
 from .jobs import (
     DEFAULT_TIMEOUT,
     LOGS_DIR,
+    permission_response_path,
     default_artifacts,
+    default_permission_state,
     default_verification,
     default_worktree,
     detect_repo_root,
@@ -53,7 +62,10 @@ def failure_like(result: dict[str, Any]) -> bool:
         "usage:",
         "not logged in",
     ]
-    if any(re.search(pattern, stdout_text, flags=re.MULTILINE) for pattern in soft_failure_patterns):
+    if any(
+        re.search(pattern, stdout_text, flags=re.MULTILINE)
+        for pattern in soft_failure_patterns
+    ):
         return True
     if stdout_text.strip():
         return False
@@ -79,6 +91,102 @@ def summarize_result(result: dict[str, Any]) -> str:
     return output
 
 
+PERMISSION_WAITING_STATUS = "pending_permission"
+PERMISSION_POLL_INTERVAL = 0.1
+UNSET = object()
+
+
+def normalize_permission_policy(policy: str | None) -> str:
+    clean = str(policy or "").strip().lower()
+    return clean if clean in {"relay", "skip", "deny"} else "skip"
+
+
+def effective_permission_policy(job: dict[str, Any], worker: str) -> str:
+    requested = normalize_permission_policy(
+        (job.get("permissions") or {}).get("policy")
+    )
+    if requested == "skip":
+        return "skip"
+    if worker_supports_permission_relay(worker):
+        return requested
+    return "skip"
+
+
+def permission_prompt_excerpt(worker: str, output: str) -> str | None:
+    if normalize_target(worker) != "codex":
+        return None
+    lines = [line.strip() for line in str(output).splitlines() if line.strip()]
+    prompt_markers = ("[y/n]", "[y/N]", "(y/n)", "(y/N)", "yes/no")
+    for line in reversed(lines[-8:]):
+        lowered = line.lower()
+        if (
+            "allow" in lowered or "approve" in lowered or "permission" in lowered
+        ) and any(marker.lower() in lowered for marker in prompt_markers):
+            return line[:400]
+    return None
+
+
+def write_permission_response(job_id: str, decision: str) -> Path:
+    path = permission_response_path(job_id)
+    payload = {"decision": decision, "responded_at": now_ts()}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def consume_permission_response(job_id: str) -> str | None:
+    path = permission_response_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+    path.unlink(missing_ok=True)
+    decision = str(payload.get("decision") or "").strip().lower()
+    if decision in {"allow", "approve", "yes", "y"}:
+        return "allow"
+    if decision in {"deny", "no", "n"}:
+        return "deny"
+    return None
+
+
+def update_job_permission_state(
+    job_id: str,
+    *,
+    status: str | None = None,
+    pending: dict[str, Any] | None | object = UNSET,
+    event: dict[str, Any] | None = None,
+) -> None:
+    job = load_job(job_id)
+    permissions = job.get("permissions") or default_permission_state("skip")
+    if status:
+        job["status"] = status
+    if pending is not UNSET:
+        permissions["pending"] = pending
+    if event:
+        permissions.setdefault("events", []).append(event)
+    job["permissions"] = permissions
+    save_job(job)
+
+
+def wait_for_permission_decision(job_id: str, proc: subprocess.Popen[bytes]) -> str:
+    while True:
+        decision = consume_permission_response(job_id)
+        if decision:
+            return decision
+        if proc.poll() is not None:
+            return "deny"
+        time.sleep(PERMISSION_POLL_INTERVAL)
+
+
+def emit_live_output(text: str, stream: TextIO | None) -> None:
+    if not text or stream is None:
+        return
+    stream.write(text)
+    stream.flush()
+
+
 def collect_result(
     worker: str,
     command: list[str],
@@ -86,29 +194,65 @@ def collect_result(
     timeout: int,
     job_id: str,
     attempt_index: int,
+    *,
+    stream: TextIO | None = None,
 ) -> dict[str, Any]:
     started = now_ts()
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOGS_DIR / f"{job_id}-{attempt_index:02d}-{worker}.log"
+    output_chunks: list[str] = []
     with log_path.open("w", encoding="utf-8") as log_handle:
         proc = subprocess.Popen(
             command,
-            stdout=log_handle,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
             cwd=cwd,
             start_new_session=True,
         )
+        deadline = started + timeout
         try:
-            exit_code = proc.wait(timeout=timeout)
-        except KeyboardInterrupt:
-            _terminate_worker_process(proc)
-            try:
-                proc.wait(timeout=5)
-            except BaseException:
-                pass
-            exit_code = 130
-            log_handle.write("\n[ai-dispatch] interrupted\n")
+            assert proc.stdout is not None
+            while True:
+                if time.time() >= deadline:
+                    _terminate_worker_process(proc)
+                    try:
+                        proc.wait(timeout=5)
+                    except BaseException:
+                        pass
+                    exit_code = 124
+                    log_handle.write("\n[ai-dispatch] timed out\n")
+                    break
+
+                try:
+                    ready, _, _ = select.select([proc.stdout], [], [], PERMISSION_POLL_INTERVAL)
+                except (AttributeError, OSError, TypeError, ValueError):
+                    exit_code = int(
+                        proc.wait(timeout=max(deadline - time.time(), PERMISSION_POLL_INTERVAL)) or 0
+                    )
+                    break
+                if not ready:
+                    if proc.poll() is not None:
+                        exit_code = int(proc.returncode or 0)
+                        break
+                    continue
+
+                try:
+                    data = os.read(proc.stdout.fileno(), 4096)
+                except (AttributeError, OSError, TypeError, ValueError):
+                    exit_code = int(
+                        proc.wait(timeout=max(deadline - time.time(), PERMISSION_POLL_INTERVAL)) or 0
+                    )
+                    break
+                if data:
+                    text = data.decode("utf-8", errors="replace")
+                    output_chunks.append(text)
+                    log_handle.write(text)
+                    log_handle.flush()
+                    emit_live_output(text, stream)
+                    continue
+
+                exit_code = int(proc.wait(timeout=0))
+                break
         except subprocess.TimeoutExpired:
             _terminate_worker_process(proc)
             try:
@@ -117,29 +261,186 @@ def collect_result(
                 pass
             exit_code = 124
             log_handle.write("\n[ai-dispatch] timed out\n")
+        except KeyboardInterrupt:
+            _terminate_worker_process(proc)
+            try:
+                proc.wait(timeout=5)
+            except BaseException:
+                pass
+            exit_code = 130
+            log_handle.write("\n[ai-dispatch] interrupted\n")
+        finally:
+            if proc.stdout is not None:
+                try:
+                    remaining = os.read(proc.stdout.fileno(), 4096)
+                except OSError:
+                    remaining = b""
+                if remaining:
+                    text = remaining.decode("utf-8", errors="replace")
+                    output_chunks.append(text)
+                    log_handle.write(text)
+                    emit_live_output(text, stream)
+                log_handle.flush()
     finished = now_ts()
-    combined = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    combined = "".join(output_chunks).strip()
+    if not combined and log_path.exists():
+        combined = log_path.read_text(encoding="utf-8", errors="replace").strip()
     return make_attempt(
         worker=worker,
         command=command,
         exit_code=exit_code,
         duration_seconds=finished - started,
-        stdout=combined.strip() if exit_code == 0 else "",
+        stdout=combined if exit_code == 0 else "",
         stderr="" if exit_code == 0 else combined.strip(),
         ok=exit_code == 0,
         log_path=str(log_path),
     )
 
 
-def preflight_job(job: dict[str, Any], *, verify_config: str | None, worktree_mode: str) -> dict[str, Any]:
+def collect_interactive_result(
+    worker: str,
+    command: list[str],
+    cwd: str,
+    timeout: int,
+    job_id: str,
+    attempt_index: int,
+    *,
+    permission_policy: str,
+    stream: TextIO | None = None,
+) -> dict[str, Any]:
+    started = now_ts()
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS_DIR / f"{job_id}-{attempt_index:02d}-{worker}.log"
+    output_chunks: list[str] = []
+    last_prompt_excerpt = ""
+
+    master_fd, slave_fd = pty.openpty()
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        proc = subprocess.Popen(
+            command,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=cwd,
+            start_new_session=True,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        exit_code = 0
+        deadline = started + timeout
+
+        try:
+            while True:
+                if time.time() >= deadline:
+                    _terminate_worker_process(proc)
+                    try:
+                        proc.wait(timeout=5)
+                    except BaseException:
+                        pass
+                    exit_code = 124
+                    log_handle.write("\n[ai-dispatch] timed out\n")
+                    break
+
+                ready, _, _ = select.select(
+                    [master_fd], [], [], PERMISSION_POLL_INTERVAL
+                )
+                if ready:
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError:
+                        data = b""
+                    if data:
+                        text = data.decode("utf-8", errors="replace")
+                        output_chunks.append(text)
+                        log_handle.write(text)
+                        log_handle.flush()
+                        emit_live_output(text, stream)
+                        excerpt = permission_prompt_excerpt(
+                            worker, "".join(output_chunks)[-4000:]
+                        )
+                        if excerpt and excerpt != last_prompt_excerpt:
+                            pending = {
+                                "worker": worker,
+                                "attempt_index": attempt_index,
+                                "prompt": excerpt,
+                                "detected_at": now_ts(),
+                            }
+                            update_job_permission_state(
+                                job_id,
+                                status=PERMISSION_WAITING_STATUS,
+                                pending=pending,
+                            )
+                            decision = "deny" if permission_policy == "deny" else None
+                            if permission_policy == "relay":
+                                decision = wait_for_permission_decision(job_id, proc)
+                            event = {
+                                "worker": worker,
+                                "attempt_index": attempt_index,
+                                "prompt": excerpt,
+                                "decision": decision or "allow",
+                                "recorded_at": now_ts(),
+                            }
+                            update_job_permission_state(
+                                job_id, status="running", pending=None, event=event
+                            )
+                            last_prompt_excerpt = excerpt
+                            os.write(
+                                master_fd,
+                                b"y\n" if (decision or "allow") == "allow" else b"n\n",
+                            )
+                            continue
+                    elif proc.poll() is not None:
+                        exit_code = int(proc.returncode or 0)
+                        break
+
+                if proc.poll() is not None:
+                    exit_code = int(proc.returncode or 0)
+                    break
+        except KeyboardInterrupt:
+            _terminate_worker_process(proc)
+            try:
+                proc.wait(timeout=5)
+            except BaseException:
+                pass
+            exit_code = 130
+            log_handle.write("\n[ai-dispatch] interrupted\n")
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+    finished = now_ts()
+    combined = "".join(output_chunks).strip()
+    return make_attempt(
+        worker=worker,
+        command=command,
+        exit_code=exit_code,
+        duration_seconds=finished - started,
+        stdout=combined if exit_code == 0 else "",
+        stderr=""
+        if exit_code == 0
+        else combined or log_path.read_text(encoding="utf-8", errors="replace").strip(),
+        ok=exit_code == 0,
+        log_path=str(log_path),
+    )
+
+
+def preflight_job(
+    job: dict[str, Any], *, verify_config: str | None, worktree_mode: str
+) -> dict[str, Any]:
     try:
-        verification = prepare_verification(job["verify_mode"], job["cwd"], override_path=verify_config)
+        verification = prepare_verification(
+            job["verify_mode"], job["cwd"], override_path=verify_config
+        )
         worktree = prepare_worktree(job["job_id"], job["cwd"], worktree_mode)
         execution_cwd = worktree["path"] or job["cwd"]
     except Exception as exc:
         job["status"] = "failed"
         job["finished_at"] = now_ts()
-        job["attempts"] = [make_attempt(worker="preflight", exit_code=2, stderr=str(exc), ok=False)]
+        job["attempts"] = [
+            make_attempt(worker="preflight", exit_code=2, stderr=str(exc), ok=False)
+        ]
         job["success"] = False
         job["winner"] = None
         save_job(job)
@@ -153,7 +454,12 @@ def preflight_job(job: dict[str, Any], *, verify_config: str | None, worktree_mo
     return job
 
 
-def run_sync(job: dict[str, Any], *, verify_config: str | None = None) -> dict[str, Any]:
+def run_sync(
+    job: dict[str, Any],
+    *,
+    verify_config: str | None = None,
+    stream: TextIO | None = None,
+) -> dict[str, Any]:
     if job.get("status") == "failed" and job.get("attempts"):
         return job
 
@@ -164,10 +470,43 @@ def run_sync(job: dict[str, Any], *, verify_config: str | None = None) -> dict[s
 
     try:
         for index, worker in enumerate(job["route"]):
-            prompt = build_prompt(job["task"], job["difficulty"], execution_cwd, job["from_agent"], worker)
+            prompt = build_prompt(
+                job["task"], job["difficulty"], execution_cwd, job["from_agent"], worker
+            )
+            permission_policy = effective_permission_policy(job, worker)
             try:
-                command = worker_command(worker, prompt, execution_cwd, job["from_agent"], job["difficulty"])
-                result = collect_result(worker, command, execution_cwd, int(job["timeout"]), job["job_id"], index)
+                command = worker_command(
+                    worker,
+                    prompt,
+                    execution_cwd,
+                    job["from_agent"],
+                    job["difficulty"],
+                    permission_policy=permission_policy,
+                )
+                if worker_supports_permission_relay(worker) and permission_policy in {
+                    "relay",
+                    "deny",
+                }:
+                    result = collect_interactive_result(
+                        worker,
+                        command,
+                        execution_cwd,
+                        int(job["timeout"]),
+                        job["job_id"],
+                        index,
+                        permission_policy=permission_policy,
+                        stream=stream,
+                    )
+                else:
+                    result = collect_result(
+                        worker,
+                        command,
+                        execution_cwd,
+                        int(job["timeout"]),
+                        job["job_id"],
+                        index,
+                        stream=stream,
+                    )
             except KeyboardInterrupt:
                 interrupted = True
                 result = make_attempt(
@@ -177,7 +516,9 @@ def run_sync(job: dict[str, Any], *, verify_config: str | None = None) -> dict[s
                     ok=False,
                 )
             except Exception as exc:
-                result = make_attempt(worker=worker, exit_code=2, stderr=str(exc), ok=False)
+                result = make_attempt(
+                    worker=worker, exit_code=2, stderr=str(exc), ok=False
+                )
             attempts.append(result)
             if interrupted or int(result.get("exit_code") or 0) == 130:
                 interrupted = True
@@ -189,15 +530,29 @@ def run_sync(job: dict[str, Any], *, verify_config: str | None = None) -> dict[s
         interrupted = True
 
     job["attempts"] = attempts
-    job["artifacts"]["attempt_logs"] = [item["log_path"] for item in attempts if item.get("log_path")]
+    job["artifacts"]["attempt_logs"] = [
+        item["log_path"] for item in attempts if item.get("log_path")
+    ]
     job["winner"] = winner["worker"] if winner else None
     job["success"] = winner is not None
     job["status"] = "completed" if winner else "failed"
     job["finished_at"] = now_ts()
-    job["interrupted"] = interrupted or any(int(a.get("exit_code") or 0) == 130 for a in attempts)
+    job["interrupted"] = interrupted or any(
+        int(a.get("exit_code") or 0) == 130 for a in attempts
+    )
+    job["monitor_pid"] = None
+    try:
+        latest_job = load_job(job["job_id"])
+    except FileNotFoundError:
+        latest_job = job
+    permissions = latest_job.get("permissions") or default_permission_state("skip")
+    permissions["pending"] = None
+    job["permissions"] = permissions
 
     if winner and job.get("verify_mode") != "off":
-        verification_plan = prepare_verification(job["verify_mode"], job["cwd"], override_path=verify_config)
+        verification_plan = prepare_verification(
+            job["verify_mode"], job["cwd"], override_path=verify_config
+        )
         job["verification"] = run_verification(
             {"job_id": job["job_id"], "verification": verification_plan},
             cwd=execution_cwd,
@@ -213,12 +568,12 @@ def run_sync(job: dict[str, Any], *, verify_config: str | None = None) -> dict[s
     return job
 
 
-def spawn_monitor(job: dict[str, Any], *, verify_config: str | None) -> None:
+def spawn_monitor(job: dict[str, Any], *, verify_config: str | None) -> int:
     env = os.environ.copy()
     if verify_config:
         env["AI_BRIDGE_VERIFY_CONFIG_OVERRIDE"] = verify_config
     dispatch_bin = Path(__file__).resolve().parents[2] / "bin" / "ai-dispatch"
-    subprocess.Popen(
+    proc = subprocess.Popen(
         [str(dispatch_bin), "__monitor__", job["job_id"]],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -227,6 +582,58 @@ def spawn_monitor(job: dict[str, Any], *, verify_config: str | None) -> None:
         start_new_session=True,
         env=env,
     )
+    return int(proc.pid)
+
+
+def terminate_monitor(job: dict[str, Any]) -> None:
+    pid = int(job.get("monitor_pid") or 0)
+    if not pid:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def stream_job_logs(job_id: str, offsets: dict[str, int], *, stream: TextIO | None) -> None:
+    for path in sorted(LOGS_DIR.glob(f"{job_id}-*.log")):
+        key = str(path)
+        start = offsets.get(key, 0)
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            continue
+        if size <= start:
+            continue
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(start)
+            emit_live_output(handle.read(), stream)
+        offsets[key] = size
+
+
+def wait_for_job_state(
+    job_id: str,
+    *,
+    statuses: set[str],
+    timeout: float,
+    stream_logs: bool = False,
+    stream: TextIO | None = None,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    last_job: dict[str, Any] | None = None
+    log_offsets: dict[str, int] = {}
+    while time.time() < deadline:
+        last_job = load_job(job_id)
+        if stream_logs:
+            stream_job_logs(job_id, log_offsets, stream=stream)
+        if last_job.get("status") in statuses:
+            if stream_logs:
+                stream_job_logs(job_id, log_offsets, stream=stream)
+            return last_job
+        time.sleep(PERMISSION_POLL_INTERVAL)
+    if stream_logs:
+        stream_job_logs(job_id, log_offsets, stream=stream)
+    return last_job or load_job(job_id)
 
 
 def run_monitor(job_id: str) -> int:
@@ -241,7 +648,9 @@ def run_monitor(job_id: str) -> int:
     return 0
 
 
-def poll_completions(session_key: str, limit: int = 8, mark_seen: bool = True) -> dict[str, Any]:
+def poll_completions(
+    session_key: str, limit: int = 8, mark_seen: bool = True
+) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     for job in iter_jobs():
         if session_key and job.get("session_key") != session_key:
@@ -270,12 +679,15 @@ def create_job(args: argparse.Namespace) -> dict[str, Any]:
     if repo_root:
         cwd = repo_root
 
-    route_info = route_task(task=task, target=args.target, requested_difficulty=args.difficulty, cwd=cwd)
+    route_info = route_task(
+        task=task, target=args.target, requested_difficulty=args.difficulty, cwd=cwd
+    )
     job = {
         "job_id": generate_job_id(),
         "target": args.target,
         "from_agent": args.from_agent,
-        "session_key": args.session_key or os.environ.get("AI_PEERS_SESSION_KEY", "").strip(),
+        "session_key": args.session_key
+        or os.environ.get("AI_PEERS_SESSION_KEY", "").strip(),
         "notify_on_complete": bool(args.notify_on_complete),
         "difficulty": route_info["difficulty"],
         "cwd": cwd,
@@ -301,13 +713,18 @@ def create_job(args: argparse.Namespace) -> dict[str, Any]:
         "verify_mode": args.verify,
         "requested_worktree_mode": args.worktree,
         "verification": default_verification(args.verify),
+        "permissions": default_permission_state(
+            normalize_permission_policy(getattr(args, "permissions", "skip"))
+        ),
         "worktree": default_worktree(args.worktree),
         "artifacts": default_artifacts(),
     }
     save_job(job)
     job["artifacts"]["job_file"] = str(job_path(job["job_id"]))
     save_job(job)
-    return preflight_job(job, verify_config=args.verify_config, worktree_mode=args.worktree)
+    return preflight_job(
+        job, verify_config=args.verify_config, worktree_mode=args.worktree
+    )
 
 
 def format_started(job: dict[str, Any]) -> str:
@@ -318,22 +735,39 @@ def format_started(job: dict[str, Any]) -> str:
 
 
 def build_run_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--target", default="auto", help="Explicitly target one worker, or use auto routing.")
+    parser.add_argument(
+        "--target",
+        default="auto",
+        help="Explicitly target one worker, or use auto routing.",
+    )
     parser.add_argument(
         "--difficulty",
         choices=["easy", "hard", "auto"],
         default="auto",
         help="Used by auto routing. Explicit values override classifier complexity.",
     )
-    parser.add_argument("--cwd", default=os.getcwd(), help="Working directory for the delegated worker.")
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="Per-worker timeout in seconds.")
-    parser.add_argument("--json", action="store_true", help="Emit full JSON instead of a human summary.")
+    parser.add_argument(
+        "--cwd", default=os.getcwd(), help="Working directory for the delegated worker."
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        help="Per-worker timeout in seconds.",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit full JSON instead of a human summary."
+    )
     parser.add_argument(
         "--from-agent",
         default=os.environ.get("AI_DISPATCH_SOURCE", "unknown-agent"),
         help="Name of the calling agent for prompt context.",
     )
-    parser.add_argument("--background", action="store_true", help="Run the delegation job in the background.")
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Run the delegation job in the background.",
+    )
     parser.add_argument(
         "--notify-on-complete",
         action="store_true",
@@ -350,7 +784,15 @@ def build_run_parser(parser: argparse.ArgumentParser) -> None:
         default="off",
         help="Optional verification profile to run after a successful worker result.",
     )
-    parser.add_argument("--verify-config", help="Override path for verification config JSON.")
+    parser.add_argument(
+        "--verify-config", help="Override path for verification config JSON."
+    )
+    parser.add_argument(
+        "--permissions",
+        choices=["relay", "skip", "deny"],
+        default=os.environ.get("AI_DISPATCH_PERMISSION_POLICY", "relay"),
+        help="How the top-level agent should handle worker permission prompts when supported.",
+    )
     parser.add_argument(
         "--worktree",
         default="off",
@@ -372,6 +814,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "__monitor__",
         "poll-completions",
         "job-status",
+        "permission-response",
     }
     if not argv or argv[0] not in public_commands:
         parser = argparse.ArgumentParser(prog="ai-dispatch")
@@ -387,7 +830,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     build_run_parser(run_parser)
 
     list_parser = subparsers.add_parser("list")
-    list_parser.add_argument("--status", choices=["queued", "running", "completed", "failed", "all"], default="all")
+    list_parser.add_argument(
+        "--status",
+        choices=[
+            "queued",
+            "running",
+            "pending_permission",
+            "completed",
+            "failed",
+            "all",
+        ],
+        default="all",
+    )
     list_parser.add_argument("--limit", type=int, default=20)
     list_parser.add_argument("--session-key")
     list_parser.add_argument("--json", action="store_true")
@@ -413,13 +867,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     classify_parser = subparsers.add_parser("classify")
     classify_parser.add_argument("task")
-    classify_parser.add_argument("--difficulty", choices=["easy", "hard", "auto"], default="auto")
+    classify_parser.add_argument(
+        "--difficulty", choices=["easy", "hard", "auto"], default="auto"
+    )
     classify_parser.add_argument("--json", action="store_true")
 
     route_parser = subparsers.add_parser("route")
     route_parser.add_argument("task")
     route_parser.add_argument("--target", default="auto")
-    route_parser.add_argument("--difficulty", choices=["easy", "hard", "auto"], default="auto")
+    route_parser.add_argument(
+        "--difficulty", choices=["easy", "hard", "auto"], default="auto"
+    )
     route_parser.add_argument("--cwd", default=os.getcwd())
     route_parser.add_argument("--json", action="store_true")
 
@@ -431,12 +889,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     monitor_parser.add_argument("job_id")
 
     poll_parser = subparsers.add_parser("poll-completions")
-    poll_parser.add_argument("--session-key", default=os.environ.get("AI_PEERS_SESSION_KEY", ""))
+    poll_parser.add_argument(
+        "--session-key", default=os.environ.get("AI_PEERS_SESSION_KEY", "")
+    )
     poll_parser.add_argument("--limit", type=int, default=8)
     poll_parser.add_argument("--keep-unseen", action="store_true")
 
     status_parser = subparsers.add_parser("job-status")
     status_parser.add_argument("job_id")
+
+    perm_parser = subparsers.add_parser("permission-response")
+    perm_parser.add_argument("job_id")
+    perm_parser.add_argument("decision", choices=["allow", "deny"])
+    perm_parser.add_argument("--json", action="store_true")
 
     return parser.parse_args(argv)
 
@@ -453,37 +918,94 @@ def handle_run(args: argparse.Namespace) -> int:
             )
         return 1
 
+    needs_permission_monitor = any(
+        worker_supports_permission_relay(worker)
+        and effective_permission_policy(job, worker) in {"relay", "deny"}
+        for worker in job["route"]
+    )
+
     if args.background:
-        spawn_monitor(job, verify_config=args.verify_config)
+        job["monitor_pid"] = spawn_monitor(job, verify_config=args.verify_config)
+        save_job(job)
         if args.json:
             print(json_output(job))
         else:
             print(format_started(job))
         return 0
 
-    job["status"] = "running"
-    job["started_at"] = now_ts()
-    save_job(job)
-    job = run_sync(job, verify_config=args.verify_config)
+    if needs_permission_monitor:
+        job["status"] = "running"
+        job["started_at"] = now_ts()
+        save_job(job)
+        job["monitor_pid"] = spawn_monitor(job, verify_config=args.verify_config)
+        save_job(job)
+        try:
+            job = wait_for_job_state(
+                job["job_id"],
+                statuses={PERMISSION_WAITING_STATUS, "completed", "failed"},
+                timeout=max(float(job["timeout"]) + 5.0, 5.0),
+                stream_logs=not args.json,
+                stream=sys.stdout if not args.json else None,
+            )
+        except KeyboardInterrupt:
+            terminate_monitor(job)
+            interrupted_job = load_job(job["job_id"])
+            attempts = list(interrupted_job.get("attempts") or [])
+            if not attempts:
+                attempts = [
+                    make_attempt(
+                        worker=(job.get("route") or ["unknown"])[0],
+                        exit_code=130,
+                        stderr="[ai-dispatch] interrupted",
+                        ok=False,
+                    )
+                ]
+            interrupted_job["attempts"] = attempts
+            interrupted_job["status"] = "failed"
+            interrupted_job["success"] = False
+            interrupted_job["winner"] = None
+            interrupted_job["finished_at"] = now_ts()
+            interrupted_job["interrupted"] = True
+            save_job(interrupted_job)
+            job = interrupted_job
+    else:
+        job["status"] = "running"
+        job["started_at"] = now_ts()
+        save_job(job)
+        job = run_sync(
+            job,
+            verify_config=args.verify_config,
+            stream=sys.stdout if not args.json else None,
+        )
     if args.json:
         print(json_output(job))
         if job.get("interrupted"):
             return 130
+        if job.get("status") == PERMISSION_WAITING_STATUS:
+            return 2
         return 0 if job["success"] else 1
     if job.get("interrupted"):
         detail = summarize_result(job["attempts"][-1]) if job["attempts"] else ""
-        print(
-            f"[ai-dispatch] interrupted job_file={job_path(job['job_id'])}\n"
-            f"{detail}"
-        )
+        print(f"[ai-dispatch] interrupted job_file={job_path(job['job_id'])}\n{detail}")
         return 130
     if job["success"]:
-        winner = next(attempt for attempt in job["attempts"] if attempt["worker"] == job["winner"])
+        winner = next(
+            attempt for attempt in job["attempts"] if attempt["worker"] == job["winner"]
+        )
         print(
             f"[ai-dispatch] winner={winner['worker']} difficulty={job['difficulty']} job_file={job_path(job['job_id'])}\n"
             f"{summarize_result(winner)}"
         )
         return 0
+    if job.get("status") == PERMISSION_WAITING_STATUS:
+        pending = (job.get("permissions") or {}).get("pending") or {}
+        print(
+            f"[ai-dispatch] pending permission job={job['job_id']} "
+            f"job_file={job_path(job['job_id'])}\n"
+            f"{pending.get('prompt') or 'Delegated worker is waiting for a permission decision.'}\n"
+            f"Respond with: ai-dispatch permission-response {job['job_id']} allow|deny"
+        )
+        return 2
     detail = summarize_result(job["attempts"][0]) if job["attempts"] else ""
     print(
         f"[ai-dispatch] all delegated workers failed difficulty={job['difficulty']} job_file={job_path(job['job_id'])}\n"
@@ -524,16 +1046,30 @@ def handle_retry(args: argparse.Namespace) -> int:
         json=args.json,
         from_agent=original["from_agent"],
         background=args.background,
-        notify_on_complete=args.notify_on_complete or original.get("notify_on_complete", False),
+        notify_on_complete=args.notify_on_complete
+        or original.get("notify_on_complete", False),
         session_key=original.get("session_key", ""),
         verify=original.get("verify_mode", "off"),
         verify_config=None,
+        permissions=(original.get("permissions") or {}).get("policy", "relay"),
         worktree=original.get("requested_worktree_mode", "off"),
         task=[task],
         parent_job_id=original["job_id"],
         retry_index=int(original.get("retry_index") or 0) + 1,
     )
     return handle_run(retry_args)
+
+
+def handle_permission_response(args: argparse.Namespace) -> int:
+    job = load_job(args.job_id)
+    if job.get("status") != PERMISSION_WAITING_STATUS:
+        if args.json:
+            print(json_output(job))
+        return 1
+    write_permission_response(args.job_id, args.decision)
+    if args.json:
+        print(json_output(load_job(args.job_id)))
+    return 0
 
 
 def handle_watch(args: argparse.Namespace) -> int:
@@ -549,7 +1085,8 @@ def handle_watch(args: argparse.Namespace) -> int:
                         limit=20,
                         session_key=os.environ.get("AI_PEERS_SESSION_KEY", "") or None,
                     )
-                    if job.get("status") in {"queued", "running"}
+                    if job.get("status")
+                    in {"queued", "running", PERMISSION_WAITING_STATUS}
                 ]
             }
         if args.json:
@@ -557,7 +1094,16 @@ def handle_watch(args: argparse.Namespace) -> int:
         else:
             print(format_job_list(payload["jobs"]))
 
-        terminal = args.job_id and payload["jobs"] and payload["jobs"][0].get("status") in {"completed", "failed"}
+        terminal = (
+            args.job_id
+            and payload["jobs"]
+            and payload["jobs"][0].get("status")
+            in {
+                "completed",
+                "failed",
+                PERMISSION_WAITING_STATUS,
+            }
+        )
         if args.once or terminal:
             return 0
         time.sleep(max(0.2, args.interval))
@@ -573,12 +1119,19 @@ def handle_classify(args: argparse.Namespace) -> int:
 
 
 def handle_route(args: argparse.Namespace) -> int:
-    payload = route_task(task=args.task, target=args.target, requested_difficulty=args.difficulty, cwd=args.cwd)
+    payload = route_task(
+        task=args.task,
+        target=args.target,
+        requested_difficulty=args.difficulty,
+        cwd=args.cwd,
+    )
     if args.json:
         print(json_output(payload))
     else:
         route = ", ".join(payload["route"]) or "-"
-        print(f"route={route}\ndifficulty={payload['difficulty']}\nreason={payload['route_reason']}")
+        print(
+            f"route={route}\ndifficulty={payload['difficulty']}\nreason={payload['route_reason']}"
+        )
     return 0
 
 
@@ -590,7 +1143,9 @@ def handle_cleanup_worktree(args: argparse.Namespace) -> int:
     if args.json:
         print(json_output({"job_id": job["job_id"], "worktree": updated}))
     else:
-        print(f"job={job['job_id']} cleanup_status={updated.get('cleanup_status')} path={updated.get('path')}")
+        print(
+            f"job={job['job_id']} cleanup_status={updated.get('cleanup_status')} path={updated.get('path')}"
+        )
     return 0
 
 
@@ -627,4 +1182,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "job-status":
         print(json_output(load_job(args.job_id)))
         return 0
+    if args.command == "permission-response":
+        return handle_permission_response(args)
     raise SystemExit(f"Unknown command: {args.command}")
