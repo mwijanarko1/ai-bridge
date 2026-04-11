@@ -57,7 +57,7 @@ Primary agents:
 
 Additional agents:
 
-- explicit built-in target: `goose`
+- explicit built-in targets: `goose`, `qwen`
 - adapter-configured targets: `gemini`, `aider`, `amp`, `cline`, `droid`, and other shell-callable tools
 
 `ai-delegate --target auto` routes only among the primary four unless optional agents are explicitly allowlisted in routing config.
@@ -73,7 +73,7 @@ skills/agent-delegation/SKILL.md
 It teaches supported tools how to call:
 
 ```bash
-ai-delegate --target codex|claude|cursor|opencode|goose|<adapter>|auto ...
+ai-delegate --target codex|claude|cursor|opencode|goose|qwen|<adapter>|auto ...
 ```
 
 ## 6. Optional routing config

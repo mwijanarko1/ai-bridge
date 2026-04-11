@@ -22,7 +22,7 @@ Primary agents:
 
 Additional agents:
 
-- built-in explicit target: `goose`
+- built-in explicit targets: `goose`, `qwen`
 - adapter-configured explicit targets: `gemini`, `aider`, `amp`, `cline`, `droid`, and other shell-callable tools
 
 `--target auto` uses only the primary four by default.
@@ -31,7 +31,7 @@ Additional agents:
 
 - The user explicitly says to ask another agent
 - The user wants automatic routing among the primary four
-- The user wants an explicit additional tool such as Goose or Gemini
+- The user wants an explicit additional tool such as Goose, Qwen, or Gemini
 - The user wants long-running work to continue in the background
 
 ## Routing Rules
@@ -46,6 +46,8 @@ Additional agents:
   - Use for straightforward implementation and simple edits
 - `goose`:
   - Use only when the user explicitly asks for Goose or config makes it relevant
+- `qwen`:
+  - Use only when the user explicitly asks for Qwen Code or config makes it relevant
 - adapter targets:
   - Use only when the user explicitly names them or repo/local config intentionally enables them
 - `auto`:
@@ -61,6 +63,7 @@ ai-delegate --target claude --cwd "$PWD" --from-agent codex -- "Investigate the 
 ai-delegate --target cursor --cwd "$PWD" --from-agent codex -- "Debug the race condition in the sync engine"
 ai-delegate --target opencode --cwd "$PWD" --from-agent codex -- "Rename the settings toggle label"
 ai-delegate --target goose --cwd "$PWD" --from-agent codex -- "Investigate the flaky test"
+ai-delegate --target qwen --cwd "$PWD" --from-agent codex -- "Investigate the flaky test"
 ai-delegate --target gemini --cwd "$PWD" --from-agent codex -- "Investigate the flaky test"
 ```
 
@@ -108,6 +111,6 @@ ai-delegate --target cursor --worktree auto --cwd "$PWD" --from-agent codex -- "
 
 - `ai-delegate` launches the real agent CLI. This is Hermes-style delegation via shell command, not an internal model handoff.
 - `ai-dispatch` stores local JSON job state and exposes lifecycle commands.
-- `goose` is supported explicitly, but it is not part of the default primary-four mental model.
+- `goose` and `qwen` are supported explicitly, but they are not part of the default primary-four mental model.
 - Adapter-configured tools are supported through `~/.config/ai-bridge/adapters.json`.
 - This project does not include a TUI, cost tracking, sandboxing, or auto-merge.

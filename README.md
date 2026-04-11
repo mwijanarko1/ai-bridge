@@ -99,8 +99,9 @@ They are the only agents treated as first-class in:
 
 Additional agents are supported, but they are second-class by design.
 
-- Built-in explicit target:
+- Built-in explicit targets:
   - `goose`
+  - `qwen`
 - Adapter-configured explicit targets:
   - `gemini`
   - `aider`
@@ -140,6 +141,7 @@ ai-delegate --target cursor --cwd "$PWD" --from-agent codex -- "Debug the race c
 ai-delegate --target opencode --cwd "$PWD" --from-agent codex -- "Rename the settings toggle label"
 ai-delegate --target claude --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ai-delegate --target goose --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
+ai-delegate --target qwen --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ai-delegate --target gemini --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ```
 
@@ -163,6 +165,16 @@ ai-dispatch show <job_id>
 ai-dispatch retry <job_id> --feedback "Tighten the fix and keep the diff smaller"
 ai-dispatch watch <job_id>
 ```
+
+Autonomous multi-turn orchestration (MVP): run up to `--max-turns` sequential delegations on the same PRD, feeding the previous worker output back as follow-up context until the task succeeds, a verification step fails, the worker asks for a user decision, a permission prompt needs a human decision, or the turn budget is exhausted. Each turn is still a normal on-disk job (chain via `parent_job_id`). `--background` is not supported on this subcommand.
+
+```bash
+ai-dispatch orchestrate --target cursor --max-turns 5 --cwd "$PWD" --from-agent codex --json -- "Implement section 3 of the PRD"
+```
+
+The orchestrated worker prompt asks each turn to end with `AI_BRIDGE_STATUS: done`, `AI_BRIDGE_STATUS: continue`, or `AI_BRIDGE_STATUS: blocked`. `continue` creates the next autonomous turn; `blocked` pauses and surfaces `AI_BRIDGE_USER_QUESTION` to the operator. Older workers that do not emit a status line are treated like normal successful `run` jobs.
+
+Exit codes: `0` completed successfully, `1` failed or verification failed or max turns exhausted, `2` pending permission (use `permission-response`), `3` paused for a likely user question, `130` interrupted.
 
 Route inspection:
 

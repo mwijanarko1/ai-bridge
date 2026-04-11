@@ -34,8 +34,26 @@ class RoutingTests(unittest.TestCase):
     def test_normalize_target_aliases(self) -> None:
         self.assertEqual(self.adapters.normalize_target("cursor-agent"), "cursor")
         self.assertEqual(self.adapters.normalize_target("claude-code"), "claude")
+        self.assertEqual(self.adapters.normalize_target("qwen-code"), "qwen")
+        self.assertEqual(self.adapters.normalize_target("qwen-cli"), "qwen")
         self.assertEqual(self.adapters.normalize_target("codex"), "codex")
         self.assertEqual(self.adapters.normalize_target("my-custom-agent"), "my-custom-agent")
+
+    def test_qwen_builtin_command_uses_cli_non_interactive_shape(self) -> None:
+        command = self.adapters.builtin_worker_command("qwen", "Investigate", "/tmp/repo")
+        self.assertEqual(
+            command,
+            [
+                "qwen",
+                "--include-directories",
+                "/tmp/repo",
+                "--approval-mode",
+                "yolo",
+                "--output-format",
+                "text",
+                "Investigate",
+            ],
+        )
 
     def test_render_adapter_command(self) -> None:
         rendered = self.adapters.render_adapter_command(

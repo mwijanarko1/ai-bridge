@@ -15,7 +15,7 @@ last_mapped: 2026-04-09T00:00:00Z
 | Cursor Agent | `hard-programmer` |
 | OpenCode | `easy-programmer` |
 
-Additional agents such as Goose or adapter-configured CLIs are supported explicitly, but they are not part of the default auto-routing pool.
+Additional agents such as Goose, Qwen Code, or adapter-configured CLIs are supported explicitly, but they are not part of the default auto-routing pool.
 
 Delegation is Hermes-style: one agent shells out to another agent CLI as a worker process, writes a JSON job record, and exposes the result through CLI lifecycle commands plus next-turn hook summaries.
 
@@ -42,6 +42,7 @@ Delegation is Hermes-style: one agent shells out to another agent CLI as a worke
 │   ├── adapters.py               Built-in worker commands, adapter registry loading, prompt assembly
 │   ├── routing.py                Deterministic classification, scoring, route planning, routing config
 │   ├── verify.py                 Verification config loading and post-run verification execution
+│   ├── orchestrate.py            MVP multi-turn autonomous loop helpers (heuristics, follow-up text)
 │   ├── worktree.py               Opt-in git worktree creation and cleanup
 │   ├── output.py                 Text and JSON-friendly render helpers
 │   └── tests/                    Unit and CLI integration coverage for dispatcher behavior
@@ -69,6 +70,7 @@ Delegation is Hermes-style: one agent shells out to another agent CLI as a worke
 
 ```bash
 ai-delegate --target auto --difficulty hard --cwd "$PWD" --from-agent codex -- "Debug the race condition"
+ai-delegate --target qwen --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ```
 
 Default `auto` routing uses only:
@@ -87,6 +89,7 @@ ai-dispatch list
 ai-dispatch show <job_id>
 ai-dispatch retry <job_id> --feedback "Tighten the fix"
 ai-dispatch watch <job_id>
+ai-dispatch orchestrate …   # multi-turn autonomous delegation (see README)
 ```
 
 Job state is file-backed under `~/.local/state/ai-dispatch/` by default.

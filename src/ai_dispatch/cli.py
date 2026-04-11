@@ -39,8 +39,9 @@ from .jobs import (
     save_job,
     summarize_task,
 )
-from .output import format_job_list, format_job_show, json_output
+from .output import format_job_list, format_job_show, json_output, summarize_result
 from .routing import classify_task, route_task
+from . import orchestrate as orchestrate_mod
 from .verify import prepare_verification, run_verification
 from .worktree import cleanup_worktree, prepare_worktree
 
@@ -81,14 +82,6 @@ def _terminate_worker_process(proc: subprocess.Popen[str]) -> None:
             proc.kill()
         except Exception:
             pass
-
-
-def summarize_result(result: dict[str, Any]) -> str:
-    output = result.get("stdout") or result.get("stderr") or ""
-    output = re.sub(r"\x1b\[[0-9;]*m", "", str(output)).strip()
-    if len(output) > 1400:
-        output = output[:1397] + "..."
-    return output
 
 
 PERMISSION_WAITING_STATUS = "pending_permission"
@@ -734,6 +727,17 @@ def format_started(job: dict[str, Any]) -> str:
     )
 
 
+def build_orchestrate_parser(parser: argparse.ArgumentParser) -> None:
+    build_run_parser(parser)
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Maximum autonomous delegation rounds (each round creates one job). Default: 5.",
+    )
+
+
 def build_run_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--target",
@@ -804,6 +808,7 @@ def build_run_parser(parser: argparse.ArgumentParser) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     public_commands = {
         "run",
+        "orchestrate",
         "list",
         "show",
         "retry",
@@ -828,6 +833,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     run_parser = subparsers.add_parser("run")
     build_run_parser(run_parser)
+
+    orchestrate_parser = subparsers.add_parser("orchestrate")
+    build_orchestrate_parser(orchestrate_parser)
 
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument(
@@ -906,32 +914,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def handle_run(args: argparse.Namespace) -> int:
-    job = create_job(args)
-    if job.get("status") == "failed" and job.get("attempts"):
-        if args.json:
-            print(json_output(job))
-        else:
-            print(
-                f"[ai-dispatch] preflight failed job_file={job_path(job['job_id'])}\n"
-                f"{summarize_result(job['attempts'][0])}"
-            )
-        return 1
-
+def complete_job_sync(
+    job: dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    stream: TextIO | None = None,
+) -> dict[str, Any]:
+    """Run a preflight-clean job synchronously (workers + optional verification)."""
     needs_permission_monitor = any(
         worker_supports_permission_relay(worker)
         and effective_permission_policy(job, worker) in {"relay", "deny"}
         for worker in job["route"]
     )
-
-    if args.background:
-        job["monitor_pid"] = spawn_monitor(job, verify_config=args.verify_config)
-        save_job(job)
-        if args.json:
-            print(json_output(job))
-        else:
-            print(format_started(job))
-        return 0
 
     if needs_permission_monitor:
         job["status"] = "running"
@@ -944,8 +938,8 @@ def handle_run(args: argparse.Namespace) -> int:
                 job["job_id"],
                 statuses={PERMISSION_WAITING_STATUS, "completed", "failed"},
                 timeout=max(float(job["timeout"]) + 5.0, 5.0),
-                stream_logs=not args.json,
-                stream=sys.stdout if not args.json else None,
+                stream_logs=stream is not None,
+                stream=stream,
             )
         except KeyboardInterrupt:
             terminate_monitor(job)
@@ -972,11 +966,33 @@ def handle_run(args: argparse.Namespace) -> int:
         job["status"] = "running"
         job["started_at"] = now_ts()
         save_job(job)
-        job = run_sync(
-            job,
-            verify_config=args.verify_config,
-            stream=sys.stdout if not args.json else None,
-        )
+        job = run_sync(job, verify_config=args.verify_config, stream=stream)
+    return job
+
+
+def handle_run(args: argparse.Namespace) -> int:
+    job = create_job(args)
+    if job.get("status") == "failed" and job.get("attempts"):
+        if args.json:
+            print(json_output(job))
+        else:
+            print(
+                f"[ai-dispatch] preflight failed job_file={job_path(job['job_id'])}\n"
+                f"{summarize_result(job['attempts'][0])}"
+            )
+        return 1
+
+    if args.background:
+        job["monitor_pid"] = spawn_monitor(job, verify_config=args.verify_config)
+        save_job(job)
+        if args.json:
+            print(json_output(job))
+        else:
+            print(format_started(job))
+        return 0
+
+    stream = sys.stdout if not args.json else None
+    job = complete_job_sync(job, args, stream=stream)
     if args.json:
         print(json_output(job))
         if job.get("interrupted"):
@@ -1012,6 +1028,178 @@ def handle_run(args: argparse.Namespace) -> int:
         f"{detail}\nThe calling agent should handle this task directly."
     )
     return 1
+
+
+def handle_orchestrate(args: argparse.Namespace) -> int:
+    max_turns = int(args.max_turns)
+    if max_turns < 1:
+        print(
+            "[ai-dispatch] orchestrate: --max-turns must be at least 1.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.background:
+        print(
+            "[ai-dispatch] orchestrate does not support --background; run a single job with "
+            "`ai-dispatch run --background` instead.",
+            file=sys.stderr,
+        )
+        return 2
+
+    base_task = " ".join(args.task).strip()
+    orch_id = orchestrate_mod.new_orchestration_id()
+    current_task = orchestrate_mod.build_turn_task(
+        base_task,
+        turn=1,
+        max_turns=max_turns,
+    )
+    last_job: dict[str, Any] | None = None
+    stop_reason = orchestrate_mod.STOP_MAX_TURNS
+    stream = sys.stdout if not args.json else None
+
+    for turn in range(1, max_turns + 1):
+        run_ns = argparse.Namespace(
+            target=args.target,
+            difficulty=args.difficulty,
+            cwd=args.cwd,
+            timeout=args.timeout,
+            json=args.json,
+            from_agent=args.from_agent,
+            background=False,
+            notify_on_complete=args.notify_on_complete,
+            session_key=args.session_key,
+            verify=args.verify,
+            verify_config=args.verify_config,
+            permissions=args.permissions,
+            worktree=args.worktree,
+            task=[current_task],
+            parent_job_id=last_job["job_id"] if last_job else None,
+            retry_index=turn - 1,
+        )
+
+        job = create_job(run_ns)
+        if job.get("status") == "failed" and job.get("attempts"):
+            last_job = job
+            stop_reason = orchestrate_mod.STOP_PREFLIGHT_FAILED
+            break
+
+        job["orchestration"] = {
+            "id": orch_id,
+            "turn": turn,
+            "max_turns": max_turns,
+            "base_task": base_task,
+        }
+        save_job(job)
+
+        job = complete_job_sync(job, run_ns, stream=stream)
+        last_job = job
+
+        if job.get("interrupted"):
+            stop_reason = orchestrate_mod.STOP_INTERRUPTED
+            break
+        if job.get("status") == PERMISSION_WAITING_STATUS:
+            stop_reason = orchestrate_mod.STOP_PENDING_PERMISSION
+            break
+        if orchestrate_mod.verification_failed(job):
+            stop_reason = orchestrate_mod.STOP_VERIFICATION_FAILED
+            break
+        if job.get("success"):
+            worker_status = orchestrate_mod.worker_status(job)
+            if (
+                worker_status == orchestrate_mod.STATUS_BLOCKED
+                or orchestrate_mod.output_suggests_user_question_block(job)
+            ):
+                stop_reason = orchestrate_mod.STOP_USER_QUESTION
+            elif worker_status == orchestrate_mod.STATUS_CONTINUE and turn < max_turns:
+                current_task = orchestrate_mod.build_turn_task(
+                    base_task,
+                    turn=turn + 1,
+                    max_turns=max_turns,
+                    prev_job=job,
+                )
+                continue
+            elif worker_status == orchestrate_mod.STATUS_CONTINUE:
+                stop_reason = orchestrate_mod.STOP_MAX_TURNS
+            else:
+                stop_reason = orchestrate_mod.STOP_COMPLETED
+            break
+        if turn >= max_turns:
+            stop_reason = orchestrate_mod.STOP_MAX_TURNS
+            break
+        current_task = orchestrate_mod.build_turn_task(
+            base_task,
+            turn=turn + 1,
+            max_turns=max_turns,
+            prev_job=job,
+        )
+
+    if last_job is None:
+        print("[ai-dispatch] orchestrate: no job was created.", file=sys.stderr)
+        return 1
+
+    exit_code = orchestrate_mod.orchestration_exit_code(stop_reason, last_job)
+    summary = {
+        "orchestration_id": orch_id,
+        "stop_reason": stop_reason,
+        "last_job_id": last_job["job_id"],
+        "last_job_file": str(job_path(last_job["job_id"])),
+    }
+
+    if args.json:
+        print(json_output({"orchestration": summary, "job": last_job}))
+        return exit_code
+
+    print(
+        f"[ai-dispatch] orchestrate stop={stop_reason} id={orch_id} "
+        f"last_job={last_job['job_id']} job_file={job_path(last_job['job_id'])}"
+    )
+    if stop_reason == orchestrate_mod.STOP_COMPLETED and last_job.get("success"):
+        winner_id = last_job.get("winner")
+        winner_attempt = next(
+            (a for a in (last_job.get("attempts") or []) if a.get("worker") == winner_id),
+            None,
+        )
+        if winner_attempt:
+            print(
+                f"[ai-dispatch] winner={winner_attempt['worker']} "
+                f"difficulty={last_job['difficulty']}\n{summarize_result(winner_attempt)}"
+            )
+    elif stop_reason == orchestrate_mod.STOP_PENDING_PERMISSION:
+        pending = (last_job.get("permissions") or {}).get("pending") or {}
+        print(
+            f"{pending.get('prompt') or 'Worker is waiting for a permission decision.'}\n"
+            f"Respond with: ai-dispatch permission-response {last_job['job_id']} allow|deny"
+        )
+    elif stop_reason == orchestrate_mod.STOP_USER_QUESTION:
+        w = last_job.get("winner")
+        att = next(
+            (a for a in (last_job.get("attempts") or []) if a.get("worker") == w),
+            None,
+        )
+        detail = summarize_result(att) if att else ""
+        question = orchestrate_mod.worker_user_question(last_job)
+        print(
+            "[ai-dispatch] orchestrate paused: worker output looks like a question for the user.\n"
+            f"{question or detail}\n"
+            f"Continue manually or retry with `ai-dispatch retry {last_job['job_id']} --feedback \"...\"`."
+        )
+    elif stop_reason == orchestrate_mod.STOP_VERIFICATION_FAILED:
+        ver = last_job.get("verification") or {}
+        print(
+            f"[ai-dispatch] verification failed profile={ver.get('profile')!r} "
+            f"exit_code={ver.get('exit_code')!r}\n{ver.get('summary') or ''}"
+        )
+    elif stop_reason == orchestrate_mod.STOP_PREFLIGHT_FAILED and last_job.get("attempts"):
+        print(summarize_result(last_job["attempts"][0]))
+    elif stop_reason in {
+        orchestrate_mod.STOP_MAX_TURNS,
+        orchestrate_mod.STOP_INTERRUPTED,
+    }:
+        if last_job.get("attempts"):
+            print(summarize_result(last_job["attempts"][-1]))
+
+    return exit_code
 
 
 def handle_list(args: argparse.Namespace) -> int:
@@ -1155,6 +1343,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run":
         return handle_run(args)
+    if args.command == "orchestrate":
+        return handle_orchestrate(args)
     if args.command == "list":
         return handle_list(args)
     if args.command == "show":

@@ -17,6 +17,9 @@ TARGET_ALIASES = {
     "agent": "cursor",
     "goose-cli": "goose",
     "gemini-cli": "gemini",
+    "qwen-code": "qwen",
+    "qwen-code-cli": "qwen",
+    "qwen-cli": "qwen",
 }
 
 BUILTIN_TARGETS = set(PRIMARY_AGENTS + EXTRA_BUILTIN_AGENTS)
@@ -204,6 +207,17 @@ def builtin_worker_command(worker: str, prompt: str, cwd: str, *, permission_pol
             "--text",
             prompt,
         ]
+    if worker == "qwen":
+        return [
+            "qwen",
+            "--include-directories",
+            cwd,
+            "--approval-mode",
+            "yolo",
+            "--output-format",
+            "text",
+            prompt,
+        ]
     raise ValueError(f"Unknown worker '{worker}'")
 
 
@@ -225,7 +239,7 @@ def worker_command(
     if not adapter:
         raise ValueError(
             f"Unsupported target '{worker}'. Add an adapter in {adapters_file()} "
-            "or use one of the built-in targets: codex, claude, cursor, opencode, goose."
+            "or use one of the built-in targets: codex, claude, cursor, opencode, goose, qwen."
         )
 
     command = adapter.get("command")

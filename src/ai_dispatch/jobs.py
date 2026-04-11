@@ -18,7 +18,7 @@ CONFIG_DIR = Path(os.environ.get("AI_BRIDGE_CONFIG_DIR", "~/.config/ai-bridge"))
 
 DEFAULT_TIMEOUT = 900
 PRIMARY_AGENTS = ("codex", "claude", "cursor", "opencode")
-EXTRA_BUILTIN_AGENTS = ("goose",)
+EXTRA_BUILTIN_AGENTS = ("goose", "qwen")
 
 
 def now_ts() -> float:

@@ -49,7 +49,7 @@ import os
 import sys
 print(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}))
 """
-        for name in ["codex", "claude-code-worker", "agent-hard", "opencode-easy", "goose"]:
+        for name in ["codex", "claude-code-worker", "agent-hard", "opencode-easy", "goose", "qwen"]:
             write_executable(self.bin_dir / name, script)
 
     def _run(self, *args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -145,6 +145,28 @@ print(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}))
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["winner"], "goose")
+
+    def test_explicit_qwen_target_works_without_allowlist(self) -> None:
+        result = self._run(
+            "--target",
+            "qwen-code",
+            "--json",
+            "--from-agent",
+            "codex",
+            "--cwd",
+            str(REPO_ROOT),
+            "--",
+            "Investigate the flaky test",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["winner"], "qwen")
+        self.assertEqual(payload["route"], ["qwen"])
+        argv = json.loads(payload["attempts"][0]["stdout"])["argv"]
+        self.assertEqual(
+            argv[:6],
+            ["--include-directories", str(REPO_ROOT), "--approval-mode", "yolo", "--output-format", "text"],
+        )
 
     def test_list_show_and_retry_commands(self) -> None:
         first = self._run(

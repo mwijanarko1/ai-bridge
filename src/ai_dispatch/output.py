@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+
+def summarize_result(result: dict[str, Any]) -> str:
+    output = result.get("stdout") or result.get("stderr") or ""
+    output = re.sub(r"\x1b\[[0-9;]*m", "", str(output)).strip()
+    if len(output) > 1400:
+        output = output[:1397] + "..."
+    return output
 
 
 def json_output(payload: Any) -> str:
