@@ -2,5 +2,7 @@
 set -euo pipefail
 
 ROOT="${AI_BRIDGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+export AI_BRIDGE_ROOT="${ROOT}"
+export AI_DISPATCH_PROG="${AI_DISPATCH_PROG:-ai-delegate}"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -c "from ai_dispatch.entrypoints import delegate_main; raise SystemExit(delegate_main())" "$@"

@@ -45,7 +45,10 @@ def delegate_main() -> int:
             file=sys.stderr,
         )
         return 1
-    return int(subprocess.call([dispatch, *sys.argv[1:]]))
+    env = os.environ.copy()
+    prog = Path(sys.argv[0]).name
+    env.setdefault("AI_DISPATCH_PROG", prog if prog and prog != "-c" else "ai-delegate")
+    return int(subprocess.call([dispatch, *sys.argv[1:]], env=env))
 
 
 def peers_main() -> int:

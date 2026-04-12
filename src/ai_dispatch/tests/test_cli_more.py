@@ -101,6 +101,35 @@ print("Could not complete it safely.", flush=True)
         self.assertEqual(payload["attempts"][1]["worker"], "claude")
         self.assertEqual(payload["winner"], "claude")
 
+    def test_top_level_help_gives_command_instructions(self) -> None:
+        result = self._run("--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Common commands:", result.stdout)
+        self.assertIn("ai-dispatch run --target opencode", result.stdout)
+        self.assertIn("Use '<command> --help'", result.stdout)
+        self.assertIn("run                delegate one task", result.stdout)
+        self.assertIn("orchestrate        run bounded multi-turn", result.stdout)
+        self.assertNotIn("==SUPPRESS==", result.stdout)
+        self.assertNotIn("__monitor__", result.stdout)
+
+    def test_run_help_gives_prompt_and_routing_instructions(self) -> None:
+        result = self._run("run", "--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Examples:", result.stdout)
+        self.assertIn("Use --target auto", result.stdout)
+        self.assertIn("Use --verify default|quick|full", result.stdout)
+        self.assertIn("Put -- before the task prompt", result.stdout)
+
+    def test_orchestrate_help_gives_stop_conditions(self) -> None:
+        result = self._run("orchestrate", "--help")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Examples:", result.stdout)
+        self.assertIn("AI_BRIDGE_STATUS: done, continue, or blocked", result.stdout)
+        self.assertIn("--background is not supported for orchestrate", result.stdout)
+
     def test_verification_failure_marks_job_failed(self) -> None:
         (self.config_dir / "verify.json").write_text(
             json.dumps(

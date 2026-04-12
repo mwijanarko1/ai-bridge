@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
@@ -11,6 +13,8 @@ class WrapperContractTests(unittest.TestCase):
     def test_delegate_wrapper_invokes_python_module(self) -> None:
         script = (REPO_ROOT / "bin" / "ai-delegate").read_text(encoding="utf-8")
         self.assertIn("AI_BRIDGE_ROOT", script)
+        self.assertIn("export AI_BRIDGE_ROOT", script)
+        self.assertIn("AI_DISPATCH_PROG", script)
         self.assertIn("PYTHONPATH", script)
         self.assertIn("delegate_main", script)
         self.assertIn("ai_dispatch.entrypoints", script)
@@ -19,7 +23,28 @@ class WrapperContractTests(unittest.TestCase):
         src = (REPO_ROOT / "src" / "ai_dispatch" / "entrypoints.py").read_text(encoding="utf-8")
         self.assertIn("AI_BRIDGE_DISPATCH_BIN", src)
         self.assertIn("AI_BRIDGE_ROOT", src)
+        self.assertIn("AI_DISPATCH_PROG", src)
         self.assertIn("ai-dispatch", src)
+
+    def test_delegate_help_uses_delegate_program_name(self) -> None:
+        env = os.environ.copy()
+        env.pop("AI_BRIDGE_DISPATCH_BIN", None)
+        env["AI_BRIDGE_ROOT"] = str(REPO_ROOT)
+        env["PYTHONPATH"] = f"{REPO_ROOT / 'src'}:{env.get('PYTHONPATH', '')}"
+
+        result = subprocess.run(
+            [str(REPO_ROOT / "bin" / "ai-delegate"), "--help"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: ai-delegate", result.stdout)
+        self.assertIn("ai-delegate run --target opencode", result.stdout)
 
     def test_peers_wrapper_respects_cli_and_python_overrides(self) -> None:
         script = (REPO_ROOT / "bin" / "ai-peers").read_text(encoding="utf-8")

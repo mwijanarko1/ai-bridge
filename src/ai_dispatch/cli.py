@@ -87,6 +87,76 @@ def _terminate_worker_process(proc: subprocess.Popen[str]) -> None:
 PERMISSION_WAITING_STATUS = "pending_permission"
 PERMISSION_POLL_INTERVAL = 0.1
 UNSET = object()
+PUBLIC_COMMANDS = {
+    "run",
+    "orchestrate",
+    "list",
+    "show",
+    "retry",
+    "watch",
+    "classify",
+    "route",
+    "cleanup-worktree",
+    "__monitor__",
+    "poll-completions",
+    "job-status",
+    "permission-response",
+}
+DISPATCH_DESCRIPTION = (
+    "Delegate coding work to another local AI worker, track the job, and inspect "
+    "or retry the result."
+)
+TOP_LEVEL_EPILOG = """\
+Common commands:
+  {prog} --target cursor --cwd "$PWD" -- "Fix the failing parser tests"
+  {prog} run --target opencode -- "Rename the settings toggle label"
+  {prog} orchestrate --target cursor --max-turns 5 -- "Implement the PRD"
+  {prog} list --status running
+  {prog} show <job_id> --log
+  {prog} retry <job_id> --feedback "Keep the diff smaller"
+  {prog} watch <job_id>
+
+Targets:
+  auto routes across the primary workers: codex, claude, cursor, opencode.
+  Explicit targets may also include goose, qwen, or adapter-configured tools.
+
+Notes:
+  ai-delegate is the preferred alias for the default run command.
+  Put -- before the task prompt when the prompt may start with an option-like dash.
+  Use '<command> --help' for command-specific instructions.
+"""
+RUN_EPILOG = """\
+Examples:
+  {prog} --target auto --difficulty hard --cwd "$PWD" -- "Debug the race condition"
+  {prog} run --target cursor --verify default -- "Refactor the auth flow"
+  {prog} run --target opencode --background --notify-on-complete -- "Add a docs note"
+
+Instructions:
+  Use --target auto for default routing across codex, claude, cursor, and opencode.
+  Use --target <name> to force a specific worker.
+  Use --verify default|quick|full to run a configured verification profile after success.
+  Use --worktree auto or --worktree branch:<name> for opt-in worktree isolation.
+  Put -- before the task prompt when the prompt may start with an option-like dash.
+"""
+ORCHESTRATE_EPILOG = """\
+Examples:
+  {prog} orchestrate --target cursor --max-turns 5 --cwd "$PWD" -- "Implement section 3"
+  {prog} orchestrate --target auto --verify default --max-turns 3 -- "Finish the migration"
+
+Instructions:
+  Each turn creates a normal job linked to the previous turn.
+  The worker should finish with AI_BRIDGE_STATUS: done, continue, or blocked.
+  Orchestration stops on success, verification failure, permission prompts, user questions, or max turns.
+  --background is not supported for orchestrate.
+"""
+
+
+def _program_name() -> str:
+    return os.environ.get("AI_DISPATCH_PROG", "ai-dispatch").strip() or "ai-dispatch"
+
+
+def _help_text(template: str, *, prog: str) -> str:
+    return template.format(prog=prog)
 
 
 def normalize_permission_policy(policy: str | None) -> str:
@@ -727,6 +797,20 @@ def format_started(job: dict[str, Any]) -> str:
     )
 
 
+def _help_parser(
+    *,
+    prog: str,
+    description: str | None = None,
+    epilog: str | None = None,
+) -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        prog=prog,
+        description=description,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
 def build_orchestrate_parser(parser: argparse.ArgumentParser) -> None:
     build_run_parser(parser)
     parser.add_argument(
@@ -806,38 +890,64 @@ def build_run_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    public_commands = {
-        "run",
-        "orchestrate",
-        "list",
-        "show",
-        "retry",
-        "watch",
-        "classify",
-        "route",
-        "cleanup-worktree",
-        "__monitor__",
-        "poll-completions",
-        "job-status",
-        "permission-response",
-    }
-    if not argv or argv[0] not in public_commands:
-        parser = argparse.ArgumentParser(prog="ai-dispatch")
+    prog = _program_name()
+    if argv and argv[0] in {"-h", "--help"}:
+        parser = build_command_parser(prog=prog, include_internal=False)
+        return parser.parse_args(argv)
+
+    if not argv or argv[0] not in PUBLIC_COMMANDS:
+        parser = _help_parser(
+            prog=prog,
+            description=DISPATCH_DESCRIPTION,
+            epilog=_help_text(RUN_EPILOG, prog=prog),
+        )
         build_run_parser(parser)
         args = parser.parse_args(argv)
         args.command = "run"
         return args
 
-    parser = argparse.ArgumentParser(prog="ai-dispatch")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = build_command_parser(prog=prog)
+    return parser.parse_args(argv)
 
-    run_parser = subparsers.add_parser("run")
+
+def build_command_parser(
+    *, prog: str = "ai-dispatch", include_internal: bool = True
+) -> argparse.ArgumentParser:
+    parser = _help_parser(
+        prog=prog,
+        description=DISPATCH_DESCRIPTION,
+        epilog=_help_text(TOP_LEVEL_EPILOG, prog=prog),
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="command",
+        title="commands",
+    )
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="delegate one task and optionally verify the result",
+        description="Delegate one task to a worker and store the job result.",
+        epilog=_help_text(RUN_EPILOG, prog=prog),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     build_run_parser(run_parser)
 
-    orchestrate_parser = subparsers.add_parser("orchestrate")
+    orchestrate_parser = subparsers.add_parser(
+        "orchestrate",
+        help="run bounded multi-turn delegation on one task",
+        description="Run sequential delegation turns until the task completes or stops.",
+        epilog=_help_text(ORCHESTRATE_EPILOG, prog=prog),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     build_orchestrate_parser(orchestrate_parser)
 
-    list_parser = subparsers.add_parser("list")
+    list_parser = subparsers.add_parser(
+        "list",
+        help="list stored jobs",
+        description="List stored delegation jobs.",
+    )
     list_parser.add_argument(
         "--status",
         choices=[
@@ -854,33 +964,53 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     list_parser.add_argument("--session-key")
     list_parser.add_argument("--json", action="store_true")
 
-    show_parser = subparsers.add_parser("show")
+    show_parser = subparsers.add_parser(
+        "show",
+        help="show one job, optionally including logs",
+        description="Show a stored delegation job.",
+    )
     show_parser.add_argument("job_id")
     show_parser.add_argument("--attempt", type=int)
     show_parser.add_argument("--log", action="store_true")
     show_parser.add_argument("--json", action="store_true")
 
-    retry_parser = subparsers.add_parser("retry")
+    retry_parser = subparsers.add_parser(
+        "retry",
+        help="retry a job with optional feedback",
+        description="Retry a stored job, preserving its routing and verification options.",
+    )
     retry_parser.add_argument("job_id")
     retry_parser.add_argument("--feedback")
     retry_parser.add_argument("--background", action="store_true")
     retry_parser.add_argument("--notify-on-complete", action="store_true")
     retry_parser.add_argument("--json", action="store_true")
 
-    watch_parser = subparsers.add_parser("watch")
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="watch a job or active session jobs",
+        description="Watch a job until it reaches a terminal or waiting state.",
+    )
     watch_parser.add_argument("job_id", nargs="?")
     watch_parser.add_argument("--once", action="store_true")
     watch_parser.add_argument("--json", action="store_true")
     watch_parser.add_argument("--interval", type=float, default=2.0)
 
-    classify_parser = subparsers.add_parser("classify")
+    classify_parser = subparsers.add_parser(
+        "classify",
+        help="classify a task for routing",
+        description="Classify a task without creating a job.",
+    )
     classify_parser.add_argument("task")
     classify_parser.add_argument(
         "--difficulty", choices=["easy", "hard", "auto"], default="auto"
     )
     classify_parser.add_argument("--json", action="store_true")
 
-    route_parser = subparsers.add_parser("route")
+    route_parser = subparsers.add_parser(
+        "route",
+        help="preview the worker route for a task",
+        description="Preview routing without creating a job.",
+    )
     route_parser.add_argument("task")
     route_parser.add_argument("--target", default="auto")
     route_parser.add_argument(
@@ -889,29 +1019,44 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     route_parser.add_argument("--cwd", default=os.getcwd())
     route_parser.add_argument("--json", action="store_true")
 
-    cleanup_parser = subparsers.add_parser("cleanup-worktree")
+    cleanup_parser = subparsers.add_parser(
+        "cleanup-worktree",
+        help="remove a retained job worktree",
+        description="Remove a retained worktree for a job.",
+    )
     cleanup_parser.add_argument("job_id")
     cleanup_parser.add_argument("--json", action="store_true")
 
-    monitor_parser = subparsers.add_parser("__monitor__")
-    monitor_parser.add_argument("job_id")
+    if include_internal:
+        monitor_parser = subparsers.add_parser("__monitor__")
+        monitor_parser.add_argument("job_id")
 
-    poll_parser = subparsers.add_parser("poll-completions")
-    poll_parser.add_argument(
-        "--session-key", default=os.environ.get("AI_PEERS_SESSION_KEY", "")
+        poll_parser = subparsers.add_parser(
+            "poll-completions",
+            description="Poll unseen completion notifications for a session.",
+        )
+        poll_parser.add_argument(
+            "--session-key", default=os.environ.get("AI_PEERS_SESSION_KEY", "")
+        )
+        poll_parser.add_argument("--limit", type=int, default=8)
+        poll_parser.add_argument("--keep-unseen", action="store_true")
+
+        status_parser = subparsers.add_parser(
+            "job-status",
+            description="Emit one job status as JSON.",
+        )
+        status_parser.add_argument("job_id")
+
+    perm_parser = subparsers.add_parser(
+        "permission-response",
+        help="answer a pending worker permission prompt",
+        description="Answer a pending worker permission prompt.",
     )
-    poll_parser.add_argument("--limit", type=int, default=8)
-    poll_parser.add_argument("--keep-unseen", action="store_true")
-
-    status_parser = subparsers.add_parser("job-status")
-    status_parser.add_argument("job_id")
-
-    perm_parser = subparsers.add_parser("permission-response")
     perm_parser.add_argument("job_id")
     perm_parser.add_argument("decision", choices=["allow", "deny"])
     perm_parser.add_argument("--json", action="store_true")
 
-    return parser.parse_args(argv)
+    return parser
 
 
 def complete_job_sync(
