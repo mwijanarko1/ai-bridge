@@ -19,6 +19,17 @@ ROLE_EASY = "easy-programmer"
 ROLE_HARD = "hard-programmer"
 ROLE_ORCH = "orchestrator-reviewer"
 ROLE_WORKER = "worker"
+TARGET_CLIENTS = {
+    "codex": {"codex"},
+    "openai-codex-cli": {"codex"},
+    "codex-cli": {"codex"},
+    "cursor": {"cursor-agent"},
+    "cursor-agent": {"cursor-agent"},
+    "agent": {"cursor-agent"},
+    "opencode": {"opencode"},
+    "claude": {"claude-code"},
+    "claude-code": {"claude-code"},
+}
 
 
 def stable_peer_id() -> str:
@@ -73,8 +84,7 @@ def init_db() -> None:
                 to_peer_id TEXT NOT NULL,
                 body TEXT NOT NULL,
                 created_at REAL NOT NULL,
-                read_at REAL,
-                FOREIGN KEY (from_peer_id) REFERENCES peers(peer_id) ON DELETE CASCADE
+                read_at REAL
             );
 
             CREATE INDEX IF NOT EXISTS idx_peers_last_seen ON peers(last_seen);
@@ -84,6 +94,29 @@ def init_db() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(peers)").fetchall()}
         if "role" not in columns:
             conn.execute("ALTER TABLE peers ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'")
+        message_foreign_keys = conn.execute("PRAGMA foreign_key_list(messages)").fetchall()
+        if message_foreign_keys:
+            conn.executescript(
+                """
+                ALTER TABLE messages RENAME TO messages_old;
+
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_peer_id TEXT NOT NULL,
+                    to_peer_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    read_at REAL
+                );
+
+                INSERT INTO messages (id, from_peer_id, to_peer_id, body, created_at, read_at)
+                SELECT id, from_peer_id, to_peer_id, body, created_at, read_at
+                FROM messages_old;
+
+                DROP TABLE messages_old;
+                CREATE INDEX IF NOT EXISTS idx_messages_to_peer_read ON messages(to_peer_id, read_at, created_at);
+                """
+            )
         conn.commit()
 
 
@@ -148,6 +181,11 @@ def infer_role(client: str) -> str:
     return ROLE_WORKER
 
 
+def target_clients(target: str) -> set[str]:
+    clean = str(target or "").strip().lower()
+    return TARGET_CLIENTS.get(clean, {clean} if clean else set())
+
+
 def infer_cwd() -> str:
     return os.environ.get("AI_PEERS_LAUNCH_CWD") or os.environ.get("PWD") or os.getcwd()
 
@@ -188,7 +226,18 @@ def cleanup_stale_peers() -> int:
         for row in rows:
             is_stale = row["last_seen"] < cutoff
             pid_dead = (not SKIP_PID_CHECK) and (not pid_is_alive(int(row["pid"])))
+            has_unread_messages = conn.execute(
+                """
+                SELECT 1
+                FROM messages
+                WHERE read_at IS NULL AND (from_peer_id = ? OR to_peer_id = ?)
+                LIMIT 1
+                """,
+                (row["peer_id"], row["peer_id"]),
+            ).fetchone()
             if is_stale or pid_dead:
+                if has_unread_messages:
+                    continue
                 conn.execute("DELETE FROM peers WHERE peer_id = ?", (row["peer_id"],))
                 removed += 1
         conn.commit()
@@ -253,11 +302,18 @@ def check_messages_for_peer(peer_id: str, limit: int = 20, mark_read: bool = Tru
 
 
 class PeerStore:
-    def __init__(self, registration: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        registration: dict[str, Any] | None = None,
+        *,
+        preserve_existing: bool = False,
+    ) -> None:
         init_db()
         cleanup_stale_peers()
         self.registration = registration or make_registration()
         self.peer_id = self.registration["peer_id"]
+        if preserve_existing and get_peer(self.peer_id) is not None:
+            return
         self.register()
 
     def register(self) -> None:
@@ -377,6 +433,35 @@ class PeerStore:
             "from_peer_id": self.peer_id,
             "to_peer_id": to_peer_id,
             "body": body,
+        }
+
+    def resolve_target_peer(self, target: str, scope: str = "machine") -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        clients = target_clients(target)
+        peers = [
+            peer
+            for peer in self.list_peers(scope=scope, include_self=False, only_active=True)
+            if str(peer.get("client") or "").lower() in clients
+        ]
+        if len(peers) == 1:
+            return peers[0], peers
+        return None, peers
+
+    def send_message_to_target(self, target: str, body: str, scope: str = "machine") -> dict[str, Any]:
+        peer, candidates = self.resolve_target_peer(target, scope=scope)
+        if peer is None:
+            return {
+                "ok": False,
+                "error": "no_active_peer" if not candidates else "ambiguous_peer",
+                "target": target,
+                "scope": scope,
+                "candidates": candidates,
+            }
+        return {
+            "ok": True,
+            "target": target,
+            "scope": scope,
+            "peer": peer,
+            "sent": self.send_message(peer["peer_id"], body),
         }
 
     def recommend_peer(self, task_kind: str, difficulty: str = "easy") -> dict[str, Any]:

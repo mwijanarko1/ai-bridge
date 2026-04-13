@@ -65,6 +65,12 @@ def peers_server_main() -> int:
     return 0
 
 
+def setup_hooks_main() -> int:
+    from .setup_hooks import main
+
+    return main()
+
+
 def codex_orchestrator_main() -> int:
     _launch_worker(
         binary="codex",

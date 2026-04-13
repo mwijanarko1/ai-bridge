@@ -176,6 +176,32 @@ class PeerStoreExtendedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "was not found"):
             first.send_message("missing-peer", "hello")
 
+    def test_message_survives_sender_peer_cleanup(self) -> None:
+        sender = store_module.PeerStore(registration=registration(
+            peer_id="peer-sender",
+            client="codex",
+            role="orchestrator-reviewer",
+            cwd="/tmp/a",
+            repo_root="/tmp/a",
+            pid=10017,
+        ))
+        receiver = store_module.PeerStore(registration=registration(
+            peer_id="peer-receiver",
+            client="opencode",
+            role="easy-programmer",
+            cwd="/tmp/b",
+            repo_root="/tmp/b",
+            pid=10018,
+        ))
+
+        sender.send_message("peer-receiver", "still here")
+        sender.remove_self()
+
+        unread = receiver.check_messages(mark_read=False)
+        self.assertEqual(len(unread), 1)
+        self.assertEqual(unread[0]["body"], "still here")
+        self.assertEqual(unread[0]["from_peer_id"], "peer-sender")
+
     def test_recommendation_with_no_candidates_and_role_inference(self) -> None:
         store = store_module.PeerStore(registration=registration(
             peer_id="peer-orch",

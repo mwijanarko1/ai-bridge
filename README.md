@@ -18,7 +18,15 @@ pipx install /absolute/path/to/ai-bridge
 # or: pipx install git+<repo-url>
 ```
 
-This installs `ai-dispatch`, `ai-delegate`, `ai-peers`, `ai-peers-mcp`, `codex-orchestrator`, `agent-hard`, `opencode-easy`, and `claude-code-worker` on your PATH.
+This installs `ai-dispatch`, `ai-delegate`, `ai-peers`, `ai-peers-mcp`, `ai-bridge-setup-hooks`, `codex-orchestrator`, `agent-hard`, `opencode-easy`, and `claude-code-worker` on your PATH.
+
+After install, wire the peer inbox hooks:
+
+```bash
+ai-bridge-setup-hooks
+```
+
+This writes portable hook files under `~/.config/ai-bridge/hooks`, merges Codex and Cursor hook config, and installs an OpenCode peer plugin under `~/.config/opencode/plugins/ai-bridge-peers.ts`. Restart Codex, Cursor Agent, and OpenCode after setup so they load the new hooks.
 
 Optional: point hooks or scripts at this checkout with:
 
@@ -47,6 +55,7 @@ mkdir -p ~/.local/bin
 ln -sf "$PWD/bin/ai-dispatch" ~/.local/bin/ai-dispatch
 ln -sf "$PWD/bin/ai-delegate" ~/.local/bin/ai-delegate
 ln -sf "$PWD/bin/ai-peers" ~/.local/bin/ai-peers
+ln -sf "$PWD/bin/ai-bridge-setup-hooks" ~/.local/bin/ai-bridge-setup-hooks
 ln -sf "$PWD/bin/codex-orchestrator" ~/.local/bin/codex-orchestrator
 ln -sf "$PWD/bin/agent-hard" ~/.local/bin/agent-hard
 ln -sf "$PWD/bin/opencode-easy" ~/.local/bin/opencode-easy
@@ -75,6 +84,7 @@ Reload your shell, then smoke-test the install:
 ai-dispatch --help
 ai-peers --help
 ai-delegate --help
+ai-bridge-setup-hooks --dry-run
 command -v ai-peers-mcp
 ```
 
@@ -133,6 +143,20 @@ Additional agents do not participate in `--target auto` unless they are explicit
 
 ## Core Workflows
 
+Agent-to-agent messages through active peers:
+
+```bash
+ai-peers message codex --scope machine -- "Can you review the latest diff?"
+ai-peers message cursor --scope repo -- "Please avoid src/router.py; I am editing it."
+ai-peers ask opencode --timeout 60 -- "Can you reply with opencode-ok?"
+ai-peers watch --peer-id "$AI_PEERS_SESSION_KEY" --once
+```
+
+Use peer messages when the target agent is already active and you want a short conversation or coordination note. This does not spawn a new worker process. It fails fast with JSON when no active matching peer exists or when more than one matching peer is active.
+
+`ai-peers watch` is the push-style inbox mode: it blocks, streams JSONL message batches as they arrive, and can run as a daemon with `ai-peers daemon`. It is implemented as lightweight polling of the local peer database, so it still does not start a target agent.
+`ai-peers ask` sends a peer message and waits for the first reply from that target peer, returning `reply_timeout` if the peer never answers.
+
 Explicit delegation:
 
 ```bash
@@ -144,6 +168,8 @@ ai-delegate --target goose --cwd "$PWD" --from-agent codex -- "Investigate the m
 ai-delegate --target qwen --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ai-delegate --target gemini --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
 ```
+
+Use delegation when you want to launch a fresh subprocess worker, keep a job record, run in the background, or use retry/watch lifecycle commands. Do not use `ai-delegate --target codex` as a substitute for messaging an already-running Codex peer.
 
 Auto-routing across the primary four only:
 
@@ -169,8 +195,10 @@ ai-dispatch watch <job_id>
 Autonomous multi-turn orchestration (MVP): run up to `--max-turns` sequential delegations on the same PRD, feeding the previous worker output back as follow-up context until the task succeeds, a verification step fails, the worker asks for a user decision, a permission prompt needs a human decision, or the turn budget is exhausted. Each turn is still a normal on-disk job (chain via `parent_job_id`). `--background` is not supported on this subcommand.
 
 ```bash
-ai-dispatch orchestrate --target cursor --max-turns 5 --cwd "$PWD" --from-agent codex --json -- "Implement section 3 of the PRD"
+ai-dispatch orchestrate --target cursor --max-turns 5 --cwd "$PWD" --from-agent codex -- "Implement section 3 of the PRD"
 ```
+
+Foreground non-JSON mode prints the live handoff as a transcript: `Codex -> Cursor Agent`, then streamed worker output under `Cursor Agent -> Codex`. Use `--json` when another tool needs machine-readable output instead of the live transcript.
 
 The orchestrated worker prompt asks each turn to end with `AI_BRIDGE_STATUS: done`, `AI_BRIDGE_STATUS: continue`, or `AI_BRIDGE_STATUS: blocked`. `continue` creates the next autonomous turn; `blocked` pauses and surfaces `AI_BRIDGE_USER_QUESTION` to the operator. Older workers that do not emit a status line are treated like normal successful `run` jobs.
 

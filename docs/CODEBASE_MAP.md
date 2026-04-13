@@ -68,6 +68,21 @@ Delegation is Hermes-style: one agent shells out to another agent CLI as a worke
 
 ### 1. Delegate work
 
+For active agent-to-agent coordination, use the peer bus first:
+
+```bash
+ai-peers message codex --scope machine -- "Can you review this narrow diff?"
+ai-peers message cursor --scope repo -- "Avoid src/auth.ts; I am editing it."
+ai-peers ask opencode --timeout 60 -- "Can you reply with opencode-ok?"
+ai-peers watch --peer-id "$AI_PEERS_SESSION_KEY" --once
+```
+
+Peer messages are low-overhead coordination between already-running sessions. They do not spawn a new CLI worker.
+`ai-peers watch` / `ai-peers daemon` provides push-style inbox streaming by polling the local SQLite peer bus and printing message batches as JSONL.
+`ai-peers ask` adds a synchronous request/reply wrapper around the same peer bus and fails with `reply_timeout` if the target does not answer.
+
+Use delegation when a fresh subprocess worker, background job, retry/watch lifecycle, or persisted job artifact is required:
+
 ```bash
 ai-delegate --target auto --difficulty hard --cwd "$PWD" --from-agent codex -- "Debug the race condition"
 ai-delegate --target qwen --cwd "$PWD" --from-agent codex -- "Investigate the migration bug"
@@ -89,7 +104,7 @@ ai-dispatch list
 ai-dispatch show <job_id>
 ai-dispatch retry <job_id> --feedback "Tighten the fix"
 ai-dispatch watch <job_id>
-ai-dispatch orchestrate …   # multi-turn autonomous delegation (see README)
+ai-dispatch orchestrate …   # multi-turn autonomous delegation with live foreground transcript (see README)
 ```
 
 Job state is file-backed under `~/.local/state/ai-dispatch/` by default.

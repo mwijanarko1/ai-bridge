@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -161,6 +162,239 @@ class PeerCliTests(unittest.TestCase):
         peer_b.remove_self()
         peer_c.remove_self()
 
+    def test_send_target_sends_to_active_client_peer(self) -> None:
+        codex = store_module.PeerStore(
+            registration=registration(peer_id="peer-codex", client="codex", role="orchestrator-reviewer", pid=10101)
+        )
+        cursor = store_module.PeerStore(
+            registration=registration(peer_id="peer-cursor", client="cursor-agent", role="hard-programmer", pid=10102)
+        )
+
+        sent = self._run_cli(
+            "send-target",
+            "codex",
+            "review the diff",
+            env={
+                "AI_PEERS_SESSION_KEY": "peer-cursor",
+                "AI_PEERS_CLIENT": "cursor-agent",
+                "AI_PEERS_ROLE": "hard-programmer",
+                "AI_PEERS_LAUNCH_CWD": "/tmp/repo",
+            },
+        )
+
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        payload = json.loads(sent.stdout)
+        self.assertEqual(payload["target"], "codex")
+        self.assertEqual(payload["peer"]["peer_id"], "peer-codex")
+        self.assertEqual(payload["sent"]["to_peer_id"], "peer-codex")
+
+        store_module.cleanup_stale_peers()
+        inbox = codex.check_messages()
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["body"], "review the diff")
+
+        codex.remove_self()
+        cursor.remove_self()
+
+    def test_send_target_fails_fast_when_no_active_peer_exists(self) -> None:
+        result = self._run_cli(
+            "send-target",
+            "codex",
+            "review the diff",
+            env={
+                "AI_PEERS_SESSION_KEY": "peer-cursor",
+                "AI_PEERS_CLIENT": "cursor-agent",
+                "AI_PEERS_ROLE": "hard-programmer",
+                "AI_PEERS_LAUNCH_CWD": "/tmp/repo",
+            },
+        )
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "no_active_peer")
+        self.assertEqual(payload["target"], "codex")
+
+    def test_send_target_fails_fast_when_target_is_ambiguous(self) -> None:
+        first = store_module.PeerStore(
+            registration=registration(peer_id="peer-codex-a", client="codex", role="orchestrator-reviewer", pid=10101)
+        )
+        second = store_module.PeerStore(
+            registration=registration(peer_id="peer-codex-b", client="codex", role="orchestrator-reviewer", pid=10102)
+        )
+
+        result = self._run_cli(
+            "send-target",
+            "codex",
+            "review the diff",
+            env={
+                "AI_PEERS_SESSION_KEY": "peer-cursor",
+                "AI_PEERS_CLIENT": "cursor-agent",
+                "AI_PEERS_ROLE": "hard-programmer",
+                "AI_PEERS_LAUNCH_CWD": "/tmp/repo",
+            },
+        )
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "ambiguous_peer")
+        self.assertEqual({peer["peer_id"] for peer in payload["candidates"]}, {"peer-codex-a", "peer-codex-b"})
+
+        first.remove_self()
+        second.remove_self()
+
+    def test_watch_streams_message_when_it_arrives(self) -> None:
+        watcher = store_module.PeerStore(
+            registration=registration(peer_id="peer-watch", client="opencode", role="easy-programmer", pid=10101)
+        )
+        sender = store_module.PeerStore(
+            registration=registration(peer_id="peer-sender", client="codex", role="orchestrator-reviewer", pid=10102)
+        )
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "ai_peers.cli",
+                "watch",
+                "--peer-id",
+                "peer-watch",
+                "--interval",
+                "0.05",
+                "--timeout",
+                "2",
+                "--once",
+            ],
+            cwd=str(REPO_ROOT),
+            env=self._peer_cli_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.15)
+        sender.send_message("peer-watch", "wake up")
+
+        stdout, stderr = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 0, stderr)
+        payload = json.loads(stdout.strip().splitlines()[-1])
+        self.assertEqual(payload["messages"][0]["body"], "wake up")
+        self.assertFalse(payload.get("timeout", False))
+
+        watcher.remove_self()
+        sender.remove_self()
+
+    def test_watch_timeout_emits_empty_batch(self) -> None:
+        watcher = store_module.PeerStore(
+            registration=registration(peer_id="peer-watch", client="opencode", role="easy-programmer", pid=10101)
+        )
+
+        result = self._run_cli(
+            "watch",
+            "--peer-id",
+            "peer-watch",
+            "--interval",
+            "0.05",
+            "--timeout",
+            "0.1",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["messages"], [])
+        self.assertTrue(payload["timeout"])
+
+        watcher.remove_self()
+
+    def test_ask_sends_message_and_waits_for_reply(self) -> None:
+        codex = store_module.PeerStore(
+            registration=registration(peer_id="peer-codex", client="codex", role="orchestrator-reviewer", pid=10101)
+        )
+        opencode = store_module.PeerStore(
+            registration=registration(peer_id="peer-opencode", client="opencode", role="easy-programmer", pid=10102)
+        )
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "ai_peers.cli",
+                "ask",
+                "opencode",
+                "ping",
+                "--interval",
+                "0.05",
+                "--timeout",
+                "2",
+            ],
+            cwd=str(REPO_ROOT),
+            env=self._peer_cli_env(
+                {
+                    "AI_PEERS_SESSION_KEY": "peer-codex",
+                    "AI_PEERS_CLIENT": "codex",
+                    "AI_PEERS_ROLE": "orchestrator-reviewer",
+                    "AI_PEERS_LAUNCH_CWD": "/tmp/repo",
+                }
+            ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            inbound = opencode.check_messages(mark_read=True)
+            if inbound:
+                self.assertEqual(inbound[0]["body"], "ping")
+                opencode.send_message("peer-codex", "pong")
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("ask did not send the outbound peer message")
+
+        stdout, stderr = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sent"]["to_peer_id"], "peer-opencode")
+        self.assertEqual(payload["reply"]["body"], "pong")
+
+        codex.remove_self()
+        opencode.remove_self()
+
+    def test_ask_times_out_without_reply(self) -> None:
+        codex = store_module.PeerStore(
+            registration=registration(peer_id="peer-codex", client="codex", role="orchestrator-reviewer", pid=10101)
+        )
+        opencode = store_module.PeerStore(
+            registration=registration(peer_id="peer-opencode", client="opencode", role="easy-programmer", pid=10102)
+        )
+
+        result = self._run_cli(
+            "ask",
+            "opencode",
+            "ping",
+            "--interval",
+            "0.05",
+            "--timeout",
+            "0.1",
+            env={
+                "AI_PEERS_SESSION_KEY": "peer-codex",
+                "AI_PEERS_CLIENT": "codex",
+                "AI_PEERS_ROLE": "orchestrator-reviewer",
+                "AI_PEERS_LAUNCH_CWD": "/tmp/repo",
+            },
+        )
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "reply_timeout")
+        self.assertEqual(payload["sent"]["to_peer_id"], "peer-opencode")
+
+        codex.remove_self()
+        opencode.remove_self()
+
 
 class PeerMcpParityTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -253,6 +487,12 @@ class PeerMcpParityTests(unittest.TestCase):
         self.assertEqual(sent["sent"]["to_peer_id"], "peer-easy")
         inbox_easy = peer_easy.check_messages()
         self.assertEqual(inbox_easy[0]["body"], "hello from mcp")
+
+        sent_to_target = self.server_module.send_message_to_target("opencode", "target hello")
+        self.assertTrue(sent_to_target["ok"])
+        self.assertEqual(sent_to_target["peer"]["peer_id"], "peer-easy")
+        target_inbox = peer_easy.check_messages()
+        self.assertEqual(target_inbox[0]["body"], "target hello")
 
         peer_easy.send_message(self.server_module.whoami()["peer_id"], "reply to mcp")
         inbox_self = self.server_module.check_messages(limit=10, mark_read=True)

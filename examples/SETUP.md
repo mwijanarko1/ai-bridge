@@ -25,6 +25,7 @@ With `pipx`, the commands are installed globally. In a source checkout, scripts 
 
 - `ai-peers`
 - `ai-peers-mcp`
+- `ai-bridge-setup-hooks`
 - `ai-delegate`
 - `ai-dispatch`
 - `codex-orchestrator`
@@ -32,7 +33,29 @@ With `pipx`, the commands are installed globally. In a source checkout, scripts 
 - `opencode-easy`
 - `claude-code-worker`
 
-## 3. Register the MCP server
+## 3. Install peer inbox hooks
+
+Run:
+
+```bash
+ai-bridge-setup-hooks
+```
+
+This writes generated hook files to:
+
+```text
+~/.config/ai-bridge/hooks/
+```
+
+It also merges Codex and Cursor hook config and installs an OpenCode plugin at:
+
+```text
+~/.config/opencode/plugins/ai-bridge-peers.ts
+```
+
+Restart Codex, Cursor Agent, and OpenCode after setup. Use `ai-bridge-setup-hooks --dry-run --json` to inspect planned writes without changing files.
+
+## 4. Register the MCP server
 
 The preferred MCP server command after install is:
 
@@ -46,7 +69,7 @@ If you are developing from a local virtualenv, you can also use:
 python -m ai_peers.server
 ```
 
-## 4. Understand the agent model
+## 5. Understand the agent model
 
 Primary agents:
 
@@ -62,7 +85,7 @@ Additional agents:
 
 `ai-delegate --target auto` routes only among the primary four unless optional agents are explicitly allowlisted in routing config.
 
-## 5. Install the shared skill
+## 6. Install the shared skill
 
 The shareable skill is:
 
@@ -76,7 +99,7 @@ It teaches supported tools how to call:
 ai-delegate --target codex|claude|cursor|opencode|goose|qwen|<adapter>|auto ...
 ```
 
-## 6. Optional routing config
+## 7. Optional routing config
 
 Routing config is read from:
 
@@ -108,7 +131,7 @@ Example:
 }
 ```
 
-## 7. Optional verification config
+## 8. Optional verification config
 
 Verification config is read from:
 
@@ -135,9 +158,9 @@ Use it with:
 ai-delegate --target opencode --verify default --cwd "$PWD" --from-agent codex -- "Add a simple settings toggle"
 ```
 
-## 8. Optional hook wiring
+## 9. Optional hook wiring
 
-The `hooks/` directory contains:
+The `ai-bridge-setup-hooks` command is the supported way to install hooks. The `hooks/` directory also contains source-tree copies of:
 
 - `ai-peers-context.mjs`
 - `codex-orchestrator-context.mjs`
@@ -148,7 +171,7 @@ These are used for:
 - background-job completion summaries
 - Codex startup orchestration guidance
 
-## 9. Optional worktree isolation
+## 10. Optional worktree isolation
 
 Use one of:
 
@@ -163,7 +186,7 @@ Worktrees are retained by default. Remove them manually with:
 ai-dispatch cleanup-worktree <job_id>
 ```
 
-## 10. Adapter registry
+## 11. Adapter registry
 
 Non-primary additional targets are configured via:
 
@@ -177,7 +200,7 @@ Use the example file in:
 examples/adapters.example.json
 ```
 
-## 11. Portability env vars
+## 12. Portability env vars
 
 - `AI_BRIDGE_ROOT`
 - `AI_BRIDGE_DISPATCH_BIN`

@@ -80,6 +80,11 @@ def send_message(peer_id: str, message: str) -> dict:
     return {"sent": STORE.send_message(to_peer_id=peer_id, body=message)}
 
 
+@MCP.tool(description="Send a short coordination message to one active peer by target name, such as codex, cursor, opencode, or claude.")
+def send_message_to_target(target: str, message: str, scope: str = "machine") -> dict:
+    return STORE.send_message_to_target(target=target, body=message, scope=scope)
+
+
 @MCP.tool(description="Read unread coordination messages sent to this session.")
 def check_messages(limit: int = 20, mark_read: bool = True) -> dict:
     return {"messages": STORE.check_messages(limit=limit, mark_read=mark_read)}

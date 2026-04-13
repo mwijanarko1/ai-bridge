@@ -142,6 +142,41 @@ class OrchestrateHeuristicTests(unittest.TestCase):
         self.assertIn("compile error", text)
         self.assertIn("AI_BRIDGE_STATUS", text)
 
+    def test_live_conversation_stream_prefixes_worker_output(self) -> None:
+        from ai_dispatch import orchestrate as orch
+
+        buf = io.StringIO()
+        stream = orch.LiveConversationStream(buf, "Cursor Agent")
+        stream.write("first line\npartial")
+        stream.write(" rest\n")
+        stream.finish()
+
+        self.assertEqual(
+            buf.getvalue(),
+            "Cursor Agent> first line\nCursor Agent> partial rest\n",
+        )
+
+    def test_live_turn_header_shows_orchestrator_message(self) -> None:
+        from ai_dispatch import orchestrate as orch
+
+        buf = io.StringIO()
+        orch.write_live_turn_header(
+            buf,
+            orchestration_id="abc123",
+            turn=2,
+            max_turns=5,
+            from_agent="codex",
+            route=["cursor"],
+            job_id="job-1",
+            task="Implement the PRD",
+        )
+
+        text = buf.getvalue()
+        self.assertIn("conversation abc123 turn 2/5 job=job-1", text)
+        self.assertIn("Codex -> Cursor Agent:", text)
+        self.assertIn("Implement the PRD", text)
+        self.assertIn("Cursor Agent -> Codex:", text)
+
 
 class OrchestrateLoopTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -226,6 +261,8 @@ class OrchestrateLoopTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(mock_complete.call_count, 2)
         out = buf.getvalue()
+        self.assertIn("Codex -> OpenCode", out)
+        self.assertIn("OpenCode -> Codex", out)
         self.assertIn("stop=completed", out)
 
     @patch("ai_dispatch.cli.complete_job_sync")

@@ -54,6 +54,12 @@ class WrapperContractTests(unittest.TestCase):
         self.assertIn("ai_peers.cli", script)
         self.assertIn("PYTHONPATH", script)
 
+    def test_setup_hooks_wrapper_invokes_python_module(self) -> None:
+        script = (REPO_ROOT / "bin" / "ai-bridge-setup-hooks").read_text(encoding="utf-8")
+        self.assertIn("AI_BRIDGE_ROOT", script)
+        self.assertIn("PYTHONPATH", script)
+        self.assertIn("ai_dispatch.setup_hooks", script)
+
     def test_pyproject_declares_console_scripts(self) -> None:
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         scripts = pyproject["project"]["scripts"]
@@ -62,6 +68,7 @@ class WrapperContractTests(unittest.TestCase):
             "ai-delegate",
             "ai-peers",
             "ai-peers-mcp",
+            "ai-bridge-setup-hooks",
             "codex-orchestrator",
             "agent-hard",
             "opencode-easy",

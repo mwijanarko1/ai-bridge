@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any
+from typing import Any, TextIO
 
 from .output import summarize_result
 
@@ -26,10 +26,81 @@ _QUESTION_RE = re.compile(
     r"^\s*AI_BRIDGE_USER_QUESTION:\s*(?P<question>.+?)\s*$",
     flags=re.IGNORECASE | re.MULTILINE,
 )
+AGENT_DISPLAY_NAMES = {
+    "codex": "Codex",
+    "claude": "Claude Code",
+    "cursor": "Cursor Agent",
+    "cursor-agent": "Cursor Agent",
+    "opencode": "OpenCode",
+    "goose": "Goose",
+}
 
 
 def new_orchestration_id() -> str:
     return uuid.uuid4().hex[:10]
+
+
+def agent_label(name: str) -> str:
+    clean = str(name or "").strip()
+    return AGENT_DISPLAY_NAMES.get(clean.lower(), clean or "Agent")
+
+
+def route_label(route: list[str]) -> str:
+    labels = [agent_label(worker) for worker in route]
+    return " / ".join(labels) if labels else "Worker"
+
+
+class LiveConversationStream:
+    def __init__(self, stream: TextIO, speaker: str) -> None:
+        self.stream = stream
+        self.speaker = speaker
+        self._at_line_start = True
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        written = 0
+        for chunk in str(text).splitlines(keepends=True):
+            if self._at_line_start and chunk:
+                prefix = f"{self.speaker}> "
+                self.stream.write(prefix)
+                written += len(prefix)
+            self.stream.write(chunk)
+            written += len(chunk)
+            self._at_line_start = chunk.endswith("\n") or chunk.endswith("\r")
+        return written
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def finish(self) -> None:
+        if not self._at_line_start:
+            self.stream.write("\n")
+            self._at_line_start = True
+        self.stream.flush()
+
+
+def write_live_turn_header(
+    stream: TextIO,
+    *,
+    orchestration_id: str,
+    turn: int,
+    max_turns: int,
+    from_agent: str,
+    route: list[str],
+    job_id: str,
+    task: str,
+) -> None:
+    orchestrator = agent_label(from_agent)
+    worker = route_label(route)
+    stream.write(
+        f"\n[ai-bridge] conversation {orchestration_id} turn {turn}/{max_turns} job={job_id}\n"
+    )
+    stream.write(f"{orchestrator} -> {worker}:\n")
+    stream.write(task.rstrip())
+    stream.write("\n")
+    stream.write(f"{worker} -> {orchestrator}:\n")
+    stream.flush()
 
 
 def winner_stdout(job: dict[str, Any]) -> str:

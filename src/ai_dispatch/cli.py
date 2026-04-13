@@ -145,6 +145,7 @@ Examples:
 
 Instructions:
   Each turn creates a normal job linked to the previous turn.
+  Foreground non-JSON mode prints a live Codex -> worker / worker -> Codex transcript.
   The worker should finish with AI_BRIDGE_STATUS: done, continue, or blocked.
   Orchestration stops on success, verification failure, permission prompts, user questions, or max turns.
   --background is not supported for orchestrate.
@@ -267,6 +268,7 @@ def collect_result(
     with log_path.open("w", encoding="utf-8") as log_handle:
         proc = subprocess.Popen(
             command,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
@@ -1237,7 +1239,25 @@ def handle_orchestrate(args: argparse.Namespace) -> int:
         }
         save_job(job)
 
-        job = complete_job_sync(job, run_ns, stream=stream)
+        worker_stream: TextIO | None = None
+        if stream is not None:
+            orchestrate_mod.write_live_turn_header(
+                stream,
+                orchestration_id=orch_id,
+                turn=turn,
+                max_turns=max_turns,
+                from_agent=args.from_agent,
+                route=job.get("route") or [],
+                job_id=job["job_id"],
+                task=current_task,
+            )
+            worker_stream = orchestrate_mod.LiveConversationStream(
+                stream, orchestrate_mod.route_label(job.get("route") or [])
+            )
+
+        job = complete_job_sync(job, run_ns, stream=worker_stream)
+        if worker_stream is not None:
+            worker_stream.finish()
         last_job = job
 
         if job.get("interrupted"):

@@ -440,6 +440,56 @@ print("done")
         self.assertTrue(payload["attempts"])
         self.assertEqual(payload["attempts"][0]["exit_code"], 130)
 
+    def test_worker_stdin_is_closed_even_when_caller_pipe_stays_open(self) -> None:
+        stdin_reader = """#!/usr/bin/env python3
+import json
+import sys
+
+data = sys.stdin.read()
+print(json.dumps({"stdin_len": len(data)}))
+"""
+        write_executable(self.bin_dir / "codex", stdin_reader)
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(DISPATCH_BIN),
+                "--target",
+                "codex",
+                "--permissions",
+                "skip",
+                "--json",
+                "--from-agent",
+                "cursor-agent",
+                "--cwd",
+                str(REPO_ROOT),
+                "--",
+                "Review the patch",
+            ],
+            cwd=str(REPO_ROOT),
+            env=self.base_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        deadline = time.time() + 4.0
+        while time.time() < deadline and proc.poll() is None:
+            time.sleep(0.05)
+
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+            self.fail("dispatcher kept the worker blocked on inherited stdin")
+
+        stdout, stderr = proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "completed")
+        attempt_stdout = json.loads(payload["attempts"][0]["stdout"])
+        self.assertEqual(attempt_stdout["stdin_len"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
