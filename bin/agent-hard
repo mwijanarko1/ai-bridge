@@ -5,4 +5,26 @@ export AI_PEERS_ROLE="hard-programmer"
 export AI_PEERS_SESSION_KEY="${AI_PEERS_SESSION_KEY:-$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '-')}"
 export AI_PEERS_LAUNCH_CWD="${PWD}"
 export AI_PEERS_SUMMARY="${AI_PEERS_SUMMARY:-Cursor hard-task implementer}"
-exec agent "$@"
+
+# User preference: Cursor Agent must always use normal Composer 2.5, never fast mode
+# and never any other Cursor model. Strip any caller-provided --model/-m first.
+args=()
+skip_next=0
+for arg in "$@"; do
+  if [[ "$skip_next" == "1" ]]; then
+    skip_next=0
+    continue
+  fi
+  case "$arg" in
+    --model|-m)
+      skip_next=1
+      ;;
+    --model=*|-m=*)
+      ;;
+    *)
+      args+=("$arg")
+      ;;
+  esac
+done
+
+exec agent --model composer-2.5 "${args[@]}"

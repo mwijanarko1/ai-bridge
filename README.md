@@ -84,6 +84,7 @@ Reload your shell, then smoke-test the install:
 ai-dispatch --help
 ai-peers --help
 ai-delegate --help
+ai-dispatch doctor
 ai-bridge-setup-hooks --dry-run
 command -v ai-peers-mcp
 ```
@@ -132,6 +133,8 @@ Additional agents do not participate in `--target auto` unless they are explicit
   - local peer-bus CLI
 - `ai-peers-mcp`
   - launch the peer-bus MCP server
+- `ai-dispatch doctor`
+  - inspect local setup, config, state paths, and hook installation
 - `codex-orchestrator`
   - launch Codex as orchestrator/reviewer
 - `agent-hard`
@@ -191,6 +194,15 @@ ai-dispatch show <job_id>
 ai-dispatch retry <job_id> --feedback "Tighten the fix and keep the diff smaller"
 ai-dispatch watch <job_id>
 ```
+
+Diagnostics:
+
+```bash
+ai-dispatch doctor
+ai-dispatch doctor --json
+```
+
+`doctor` checks local state-path writability, peer DB storage, installed worker and bridge entrypoints, config-file validity, and whether hook/plugin setup appears complete.
 
 Autonomous multi-turn orchestration (MVP): run up to `--max-turns` sequential delegations on the same PRD, feeding the previous worker output back as follow-up context until the task succeeds, a verification step fails, the worker asks for a user decision, a permission prompt needs a human decision, or the turn budget is exhausted. Each turn is still a normal on-disk job (chain via `parent_job_id`). `--background` is not supported on this subcommand.
 

@@ -42,6 +42,7 @@ from .jobs import (
 from .output import format_job_list, format_job_show, json_output, summarize_result
 from .routing import classify_task, route_task
 from . import orchestrate as orchestrate_mod
+from .doctor import build_doctor_report, format_doctor_report
 from .verify import prepare_verification, run_verification
 from .worktree import cleanup_worktree, prepare_worktree
 
@@ -96,6 +97,7 @@ PUBLIC_COMMANDS = {
     "watch",
     "classify",
     "route",
+    "doctor",
     "cleanup-worktree",
     "__monitor__",
     "poll-completions",
@@ -115,6 +117,7 @@ Common commands:
   {prog} show <job_id> --log
   {prog} retry <job_id> --feedback "Keep the diff smaller"
   {prog} watch <job_id>
+  {prog} doctor
 
 Targets:
   auto routes across the primary workers: codex, claude, cursor, opencode.
@@ -1021,6 +1024,18 @@ def build_command_parser(
     route_parser.add_argument("--cwd", default=os.getcwd())
     route_parser.add_argument("--json", action="store_true")
 
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="check local ai-bridge setup and config health",
+        description="Run local diagnostics for entrypoints, config files, state paths, and hook setup.",
+    )
+    doctor_parser.add_argument("--home", help="Home directory to inspect for hook/plugin setup.")
+    doctor_parser.add_argument(
+        "--config-dir",
+        help="ai-bridge config directory to inspect. Defaults to AI_BRIDGE_CONFIG_DIR or ~/.config/ai-bridge.",
+    )
+    doctor_parser.add_argument("--json", action="store_true")
+
     cleanup_parser = subparsers.add_parser(
         "cleanup-worktree",
         help="remove a retained job worktree",
@@ -1488,6 +1503,15 @@ def handle_route(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_doctor(args: argparse.Namespace) -> int:
+    payload = build_doctor_report(home=args.home, config_dir=args.config_dir)
+    if args.json:
+        print(json_output(payload))
+    else:
+        print(format_doctor_report(payload))
+    return 0 if payload.get("ok") else 1
+
+
 def handle_cleanup_worktree(args: argparse.Namespace) -> int:
     job = load_job(args.job_id)
     updated = cleanup_worktree(job)
@@ -1522,6 +1546,8 @@ def main(argv: list[str] | None = None) -> int:
         return handle_classify(args)
     if args.command == "route":
         return handle_route(args)
+    if args.command == "doctor":
+        return handle_doctor(args)
     if args.command == "cleanup-worktree":
         return handle_cleanup_worktree(args)
     if args.command == "__monitor__":

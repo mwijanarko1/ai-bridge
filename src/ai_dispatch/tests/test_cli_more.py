@@ -55,6 +55,9 @@ print(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}))
         write_executable(self.bin_dir / "agent-hard", ok_script)
         write_executable(self.bin_dir / "opencode-easy", ok_script)
         write_executable(self.bin_dir / "goose", ok_script)
+        write_executable(self.bin_dir / "ai-peers", ok_script)
+        write_executable(self.bin_dir / "ai-peers-mcp", ok_script)
+        write_executable(self.bin_dir / "ai-bridge-setup-hooks", ok_script)
 
     def _run(self, *args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -239,6 +242,52 @@ print("Could not complete it safely.", flush=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["category"], "review")
+
+    def test_doctor_json_reports_ok_with_valid_setup(self) -> None:
+        home_dir = self.root / "home"
+        hook_dir = self.config_dir / "hooks"
+        opencode_plugins = home_dir / ".config" / "opencode" / "plugins"
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        opencode_plugins.mkdir(parents=True, exist_ok=True)
+        (hook_dir / "ai-peers-context.mjs").write_text("// hook\n", encoding="utf-8")
+        (hook_dir / "codex-orchestrator-context.mjs").write_text("// hook\n", encoding="utf-8")
+        (opencode_plugins / "ai-bridge-peers.ts").write_text("// plugin\n", encoding="utf-8")
+
+        result = self._run(
+            "doctor",
+            "--home",
+            str(home_dir),
+            "--config-dir",
+            str(self.config_dir),
+            "--json",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "ok")
+        checks = {item["name"]: item for item in payload["checks"]}
+        self.assertEqual(checks["state-root"]["status"], "ok")
+        self.assertEqual(checks["workers"]["status"], "ok")
+        self.assertEqual(checks["hooks"]["status"], "ok")
+
+    def test_doctor_fails_on_invalid_routing_config(self) -> None:
+        home_dir = self.root / "home"
+        (self.config_dir / "routing.json").write_text("{ not-json", encoding="utf-8")
+
+        result = self._run(
+            "doctor",
+            "--home",
+            str(home_dir),
+            "--config-dir",
+            str(self.config_dir),
+            "--json",
+        )
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "fail")
+        checks = {item["name"]: item for item in payload["checks"]}
+        self.assertEqual(checks["routing-config"]["status"], "fail")
 
     def test_list_filters_by_session_key(self) -> None:
         env = self.base_env.copy()

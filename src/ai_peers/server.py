@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import signal
 import threading
 import time
@@ -10,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .store import ACTIVE_WINDOW_SECONDS, PeerStore, cleanup_stale_peers
 
 HEARTBEAT_SECONDS = max(5, ACTIVE_WINDOW_SECONDS // 3)
+_PARENT_PID = os.getppid()
 STORE = PeerStore()
 MCP = FastMCP(
     "ai-peers",
@@ -25,6 +27,20 @@ MCP = FastMCP(
 def _cleanup(*_args: object) -> None:
     STORE.remove_self()
     raise SystemExit(0)
+
+
+def _parent_watchdog() -> None:
+    """Exit if the parent process dies (ppid becomes 1 / launchd on macOS)."""
+    while True:
+        try:
+            if os.getppid() != _PARENT_PID:
+                STORE.remove_self()
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+        time.sleep(HEARTBEAT_SECONDS)
 
 
 def _heartbeat_loop() -> None:
@@ -94,6 +110,7 @@ def main() -> None:
     atexit.register(STORE.remove_self)
     signal.signal(signal.SIGTERM, _cleanup)
     signal.signal(signal.SIGINT, _cleanup)
+    threading.Thread(target=_parent_watchdog, daemon=True).start()
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     MCP.run(transport="stdio")
 
